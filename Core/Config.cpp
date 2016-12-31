@@ -379,10 +379,13 @@ static ConfigSetting cpuSettings[] = {
 	ConfigSetting(false),
 };
 
+bool IsXperiaPlay(const std::string &name) {
+	return name == "Sony Ericsson:R800a" || name == "Sony Ericsson:R800i" || name == "Sony Ericsson:R800x" || name == "Sony Ericsson:R800at" || name == "Sony Ericsson:SO-01D" || name == "Sony Ericsson:zeus";
+}
+
 static int DefaultRenderingMode() {
-	// Workaround for ancient device. Can probably be removed now as we do no longer
-	// support Froyo (Android 2.2)...
-	if (System_GetProperty(SYSPROP_NAME) == "samsung:GT-S5360") {
+    std::string name = System_GetProperty(SYSPROP_NAME);
+	if (name == "samsung:GT-S5360" || IsXperiaPlay(name)) {
 		return 0;  // Non-buffered
 	}
 	return 1;
@@ -683,12 +686,44 @@ static int DefaultSystemParamLanguage() {
 	return defaultLang;
 }
 
+static const char* DefaultNickname() {
+    if (IsXperiaPlay(System_GetProperty(SYSPROP_NAME))) {
+        return "XperiaPlay[PPSSPP]";
+    }
+    return "PPSSPP";
+}
+
+static const char* print_mac_addr()
+{
+    FILE *ifp, *ofp;
+    char *mode = "r";
+
+    ifp = fopen("/sys/class/net/eth0/address", mode);
+
+    if (ifp == NULL) {
+        return CreateRandMAC();
+    }
+
+    char mac_addr [ 17 ];
+    while (fgets(mac_addr, sizeof mac_addr, ifp) != NULL) {
+
+    }
+
+    fclose(ifp);
+
+    return mac_addr;
+}
+
 static ConfigSetting systemParamSettings[] = {
 	ReportedConfigSetting("PSPModel", &g_Config.iPSPModel, &DefaultPSPModel, true, true),
 	ReportedConfigSetting("PSPFirmwareVersion", &g_Config.iFirmwareVersion, PSP_DEFAULT_FIRMWARE, true, true),
-	ConfigSetting("NickName", &g_Config.sNickName, "PPSSPP", true, true),
+	ConfigSetting("NickName", &g_Config.sNickName, &DefaultNickname, true, true),
 	ConfigSetting("proAdhocServer", &g_Config.proAdhocServer, "coldbird.net", true, true),
+#ifdef ANDROID
+    ConfigSetting("MacAddress", &g_Config.sMACAddress, &print_mac_addr, true, true),
+#else
 	ConfigSetting("MacAddress", &g_Config.sMACAddress, &CreateRandMAC, true, true),
+#endif
 	ConfigSetting("PortOffset", &g_Config.iPortOffset, 0, true, true),
 	ReportedConfigSetting("Language", &g_Config.iLanguage, &DefaultSystemParamLanguage, true, true),
 	ConfigSetting("TimeFormat", &g_Config.iTimeFormat, PSP_SYSTEMPARAM_TIME_FORMAT_24HR, true, true),
