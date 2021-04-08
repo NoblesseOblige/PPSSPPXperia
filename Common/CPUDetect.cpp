@@ -15,24 +15,29 @@
 // Official SVN repository and contact information can be found at
 // http://code.google.com/p/dolphin-emu/
 
-#if defined(_M_IX86) || defined(_M_X64)
+// Reference : https://stackoverflow.com/questions/6121792/how-to-check-if-a-cpu-supports-the-sse3-instruction-set
+#include "ppsspp_config.h"
+#if PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)
 
 #ifdef __ANDROID__
 #include <sys/stat.h>
 #include <fcntl.h>
+#elif PPSSPP_PLATFORM(MAC)
+#include <sys/sysctl.h>
 #endif
 
+#include <cstdint>
 #include <memory.h>
-#include "base/logging.h"
-#include "base/basictypes.h"
+#include <set>
 
-#include "Common.h"
-#include "CPUDetect.h"
-#include "StringUtils.h"
+#include "Common/Common.h"
+#include "Common/CPUDetect.h"
+#include "Common/File/FileUtil.h"
+#include "Common/StringUtils.h"
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
+#if defined(_WIN32)
+#include "Common/CommonWindows.h"
+
 #define _interlockedbittestandset workaround_ms_header_bug_platform_sdk6_set
 #define _interlockedbittestandreset workaround_ms_header_bug_platform_sdk6_reset
 #define _interlockedbittestandset64 workaround_ms_header_bug_platform_sdk6_set64
@@ -49,24 +54,31 @@ void do_cpuidex(u32 regs[4], u32 cpuid_leaf, u32 ecxval) {
 void do_cpuid(u32 regs[4], u32 cpuid_leaf) {
 	__cpuid((int *)regs, cpuid_leaf);
 }
-#else
 
-#ifdef _M_SSE
-#include <xmmintrin.h>
-
-#define _XCR_XFEATURE_ENABLED_MASK 0
-static unsigned long long _xgetbv(unsigned int index)
-{
+#ifdef __MINGW32__
+static uint64_t do_xgetbv(unsigned int index) {
 	unsigned int eax, edx;
-	__asm__ __volatile__("xgetbv" : "=a"(eax), "=d"(edx) : "c"(index));
-	return ((unsigned long long)edx << 32) | eax;
+	// This is xgetbv directly, so we can avoid compilers warning we need runtime checks.
+	asm(".byte 0x0f, 0x01, 0xd0" : "=a"(eax), "=d"(edx) : "c"(index));
+	return ((uint64_t)edx << 32) | eax;
 }
-
 #else
-#define _XCR_XFEATURE_ENABLED_MASK 0
+#define do_xgetbv _xgetbv
 #endif
 
-#if !defined(MIPS)
+#else  // _WIN32
+
+#ifdef _M_SSE
+#include <emmintrin.h>
+
+static uint64_t do_xgetbv(unsigned int index) {
+	unsigned int eax, edx;
+	__asm__ __volatile__("xgetbv" : "=a"(eax), "=d"(edx) : "c"(index));
+	return ((uint64_t)edx << 32) | eax;
+}
+#endif  // _M_SSE
+
+#if !PPSSPP_ARCH(MIPS)
 
 void do_cpuidex(u32 regs[4], u32 cpuid_leaf, u32 ecxval) {
 #if defined(__i386__) && defined(__PIC__)
@@ -88,7 +100,12 @@ void do_cpuid(u32 regs[4], u32 cpuid_leaf)
 	do_cpuidex(regs, cpuid_leaf, 0);
 }
 
-#endif
+#endif // !PPSSPP_ARCH(MIPS)
+
+#endif  // !win32
+
+#ifndef _XCR_XFEATURE_ENABLED_MASK
+#define _XCR_XFEATURE_ENABLED_MASK 0
 #endif
 
 CPUInfo cpu_info;
@@ -97,25 +114,48 @@ CPUInfo::CPUInfo() {
 	Detect();
 }
 
+#if PPSSPP_PLATFORM(LINUX)
+static std::vector<int> ParseCPUList(const std::string &filename) {
+	std::string data;
+	std::vector<int> results;
+
+	if (readFileToString(true, filename.c_str(), data)) {
+		std::vector<std::string> ranges;
+		SplitString(data, ',', ranges);
+		for (auto range : ranges) {
+			int low = 0, high = 0;
+			int parts = sscanf(range.c_str(), "%d-%d", &low, &high);
+			if (parts == 1) {
+				high = low;
+			}
+			for (int i = low; i <= high; ++i) {
+				results.push_back(i);
+			}
+		}
+	}
+
+	return results;
+}
+#endif
+
 // Detects the various cpu features
 void CPUInfo::Detect() {
 	memset(this, 0, sizeof(*this));
-#ifdef _M_IX86
+#if PPSSPP_ARCH(X86)
 	Mode64bit = false;
-#elif defined (_M_X64)
+#elif PPSSPP_ARCH(AMD64)
 	Mode64bit = true;
 	OS64bit = true;
 #endif
 	num_cores = 1;
 
-#ifdef _WIN32
-#ifdef _M_IX86
+#if PPSSPP_PLATFORM(UWP)
+	OS64bit = Mode64bit;  // TODO: Not always accurate!
+#elif defined(_WIN32) && PPSSPP_ARCH(X86)
 	BOOL f64 = false;
 	IsWow64Process(GetCurrentProcess(), &f64);
 	OS64bit = (f64 == TRUE) ? true : false;
 #endif
-#endif
-
 	// Set obvious defaults, for extra safety
 	if (Mode64bit) {
 		bSSE = true;
@@ -171,7 +211,7 @@ void CPUInfo::Detect() {
 		if ((cpu_id[2] >> 28) & 1) {
 			bAVX = true;
 			if ((cpu_id[2] >> 12) & 1)
-				bFMA = true;
+				bFMA3 = true;
 		}
 		if ((cpu_id[2] >> 25) & 1) bAES = true;
 
@@ -186,16 +226,19 @@ void CPUInfo::Detect() {
 		//  - Is the XSAVE bit set in CPUID? ( >>26)
 		//  - Is the OSXSAVE bit set in CPUID? ( >>27)
 		//  - XGETBV result has the XCR bit set.
-		if (((cpu_id[2] >> 28) & 1) && ((cpu_id[2] >> 27) & 1) && ((cpu_id[2] >> 26) & 1))
-		{
-			if ((_xgetbv(_XCR_XFEATURE_ENABLED_MASK) & 0x6) == 0x6)
-			{
+		if (((cpu_id[2] >> 28) & 1) && ((cpu_id[2] >> 27) & 1) && ((cpu_id[2] >> 26) & 1)) {
+			if ((do_xgetbv(_XCR_XFEATURE_ENABLED_MASK) & 0x6) == 0x6) {
 				bAVX = true;
 				if ((cpu_id[2] >> 12) & 1)
-					bFMA = true;
+					bFMA3 = true;
 			}
 		}
 
+
+		// TSX support require check:
+		// -- Is the RTM bit set in CPUID? (>>11)
+		// -- No need to check HLE bit because legacy processors ignore HLE hints
+		// -- See https://software.intel.com/en-us/articles/how-to-detect-new-instruction-support-in-the-4th-generation-intel-core-processor-family
 		if (max_std_fn >= 7)
 		{
 			do_cpuid(cpu_id, 0x00000007);
@@ -206,6 +249,10 @@ void CPUInfo::Detect() {
 				bBMI1 = true;
 			if ((cpu_id[1] >> 8) & 1)
 				bBMI2 = true;
+			if ((cpu_id[1] >> 29) & 1)
+				bSHA = true;
+			if ((cpu_id[1] >> 11) & 1)
+				bRTM = true;
 		}
 	}
 	if (max_ex_fn >= 0x80000004) {
@@ -221,6 +268,9 @@ void CPUInfo::Detect() {
 		// Check for more features.
 		do_cpuid(cpu_id, 0x80000001);
 		if (cpu_id[2] & 1) bLAHFSAHF64 = true;
+		if ((cpu_id[2] >> 6) & 1) bSSE4A = true;
+		if ((cpu_id[2] >> 16) & 1) bFMA4 = true;
+		if ((cpu_id[2] >> 11) & 1) bXOP = true;
 		// CmpLegacy (bit 2) is deprecated.
 		if ((cpu_id[3] >> 29) & 1) bLongMode = true;
 	}
@@ -261,6 +311,103 @@ void CPUInfo::Detect() {
 			num_cores = (cpu_id[2] & 0xFF) + 1;
 		}
 	}
+
+	// The above only gets valid info for the active processor.
+	// Let's rely on OS APIs for accurate information, if available, below.
+
+#if PPSSPP_PLATFORM(WINDOWS)
+#if !PPSSPP_PLATFORM(UWP)
+	typedef BOOL (WINAPI *getLogicalProcessorInformationEx_f)(LOGICAL_PROCESSOR_RELATIONSHIP RelationshipType, PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX Buffer, PDWORD ReturnedLength);
+	auto getLogicalProcessorInformationEx = (getLogicalProcessorInformationEx_f)GetProcAddress(GetModuleHandle(L"kernel32.dll"), "GetLogicalProcessorInformationEx");
+#else
+	void *getLogicalProcessorInformationEx = nullptr;
+#endif
+
+	if (getLogicalProcessorInformationEx) {
+#if !PPSSPP_PLATFORM(UWP)
+		DWORD len = 0;
+		getLogicalProcessorInformationEx(RelationAll, nullptr, &len);
+		auto processors = new uint8_t[len];
+		if (getLogicalProcessorInformationEx(RelationAll, (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)processors, &len)) {
+			num_cores = 0;
+			logical_cpu_count = 0;
+			auto p = processors;
+			while (p < processors + len) {
+				const auto &processor = *(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)p;
+				if (processor.Relationship == RelationProcessorCore) {
+					num_cores++;
+					for (int j = 0; j < processor.Processor.GroupCount; ++j) {
+						const auto &mask = processor.Processor.GroupMask[j].Mask;
+						for (int i = 0; i < sizeof(mask) * 8; ++i) {
+							logical_cpu_count += (mask >> i) & 1;
+						}
+					}
+				}
+				p += processor.Size;
+			}
+		}
+		delete [] processors;
+#endif
+	} else {
+		DWORD len = 0;
+		const DWORD sz = sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+		GetLogicalProcessorInformation(nullptr, &len);
+		std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> processors;
+		processors.resize((len + sz - 1) / sz);
+		if (GetLogicalProcessorInformation(&processors[0], &len)) {
+			num_cores = 0;
+			logical_cpu_count = 0;
+			for (auto processor : processors) {
+				if (processor.Relationship == RelationProcessorCore) {
+					num_cores++;
+					for (int i = 0; i < sizeof(processor.ProcessorMask) * 8; ++i) {
+						logical_cpu_count += (processor.ProcessorMask >> i) & 1;
+					}
+				}
+			}
+		}
+	}
+
+	// This seems to be the count per core.  Hopefully all cores are the same, but we counted each above.
+	logical_cpu_count /= num_cores;
+#elif PPSSPP_PLATFORM(LINUX)
+	if (File::Exists("/sys/devices/system/cpu/present")) {
+		// This may not count unplugged cores, but at least it's a best guess.
+		// Also, this assumes the CPU cores are heterogeneous (e.g. all cores could be active simultaneously.)
+		num_cores = 0;
+		logical_cpu_count = 0;
+
+		std::set<int> counted_cores;
+		auto present = ParseCPUList("/sys/devices/system/cpu/present");
+		for (int id : present) {
+			logical_cpu_count++;
+
+			if (counted_cores.count(id) == 0) {
+				num_cores++;
+				counted_cores.insert(id);
+
+				// Also count any thread siblings as counted.
+				auto threads = ParseCPUList(StringFromFormat("/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", id));
+				for (int mark_id : threads) {
+					counted_cores.insert(mark_id);
+				}
+			}
+		}
+	}
+
+	// This seems to be the count per core.  Hopefully all cores are the same, but we counted each above.
+	logical_cpu_count /= num_cores;
+#elif PPSSPP_PLATFORM(MAC)
+	int num = 0;
+	size_t sz = sizeof(num);
+	if (sysctlbyname("hw.physicalcpu_max", &num, &sz, nullptr, 0) == 0) {
+		num_cores = num;
+		sz = sizeof(num);
+		if (sysctlbyname("hw.logicalcpu_max", &num, &sz, nullptr, 0) == 0) {
+			logical_cpu_count = num / num_cores;
+		}
+	}
+#endif
 }
 
 // Turn the cpu info into a string we can show
@@ -268,10 +415,10 @@ std::string CPUInfo::Summarize()
 {
 	std::string sum;
 	if (num_cores == 1)
-		sum = StringFromFormat("%s, %i core", cpu_string, num_cores);
+		sum = StringFromFormat("%s, %d core", cpu_string, num_cores);
 	else
 	{
-		sum = StringFromFormat("%s, %i cores", cpu_string, num_cores);
+		sum = StringFromFormat("%s, %d cores", cpu_string, num_cores);
 		if (HTT) sum += StringFromFormat(" (%i logical threads per physical core)", logical_cpu_count);
 	}
 	if (bSSE) sum += ", SSE";
@@ -280,12 +427,18 @@ std::string CPUInfo::Summarize()
 	if (bSSSE3) sum += ", SSSE3";
 	if (bSSE4_1) sum += ", SSE4.1";
 	if (bSSE4_2) sum += ", SSE4.2";
+	if (bSSE4A) sum += ", SSE4A";
 	if (HTT) sum += ", HTT";
 	if (bAVX) sum += ", AVX";
-	if (bFMA) sum += ", FMA";
+	if (bAVX2) sum += ", AVX2";
+	if (bFMA3) sum += ", FMA3";
+	if (bFMA4) sum += ", FMA4";
 	if (bAES) sum += ", AES";
+	if (bSHA) sum += ", SHA";
+	if (bXOP) sum += ", XOP";
+	if (bRTM) sum += ", TSX";
 	if (bLongMode) sum += ", 64-bit support";
 	return sum;
 }
 
-#endif // defined(_M_IX86) || defined(_M_X64)
+#endif // PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)

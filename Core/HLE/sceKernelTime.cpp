@@ -23,7 +23,8 @@
 
 #include <time.h>
 
-#include "Common/ChunkFile.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
 #include "Core/CoreTiming.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/sceKernel.h"
@@ -31,6 +32,8 @@
 #include "Core/HLE/sceKernelThread.h"
 #include "Core/HLE/sceRtc.h"
 #include "Core/MemMap.h"
+#include "Core/System.h"
+#include "StringUtils.h"
 
 // The time when the game started.
 static time_t start_time;
@@ -38,6 +41,14 @@ static time_t start_time;
 void __KernelTimeInit()
 {
 	time(&start_time);
+	if (PSP_CoreParameter().compat.flags().DateLimited) {
+		// Car Jack Streets(NPUZ00043) requires that the date cannot exceed a certain time.
+		// 2011 year makes it work fine.
+		tm *tm;
+		tm = localtime(&start_time);
+		tm->tm_year = 111;// 2011 year.
+		start_time = mktime(tm);
+	}
 }
 
 void __KernelTimeDoState(PointerWrap &p)
@@ -47,10 +58,10 @@ void __KernelTimeDoState(PointerWrap &p)
 		return;
 
 	if (s < 2) {
-		p.Do(start_time);
+		Do(p, start_time);
 	} else {
 		u64 t = start_time;
-		p.Do(t);
+		Do(p, t);
 		start_time = (time_t)t;
 	}
 }
@@ -170,4 +181,24 @@ u32 sceKernelLibcGettimeofday(u32 timeAddr, u32 tzAddr)
 
 	hleReSchedule("libc timeofday");
 	return 0;
+}
+
+std::string KernelTimeNowFormatted() {
+	time_t emulatedTime = (time_t)start_time + (u32)(CoreTiming::GetGlobalTimeUs() / 1000000ULL);
+	tm* timePtr = localtime(&emulatedTime);
+	bool DST = timePtr->tm_isdst != 0;
+	u8 seconds = timePtr->tm_sec;
+	u8 minutes = timePtr->tm_min;
+	u8 hours = timePtr->tm_hour;
+	if (DST)
+		hours = timePtr->tm_hour + 1;
+	u8 days = timePtr->tm_mday;
+	u8 months = timePtr->tm_mon + 1;
+	u16 years = timePtr->tm_year + 1900;
+	std::string timestamp = StringFromFormat("%04d-%02d-%02d_%02d-%02d-%02d", years, months, days, hours, minutes, seconds);
+	return timestamp;
+}
+
+void KernelTimeSetBase(int64_t seconds) {
+	start_time = (time_t)seconds;
 }

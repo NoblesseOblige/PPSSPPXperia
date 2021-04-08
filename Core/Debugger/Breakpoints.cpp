@@ -16,50 +16,58 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <cstdio>
+#include <atomic>
+#include <mutex>
 
 #include "Common/Log.h"
 #include "Core/Core.h"
 #include "Core/Debugger/Breakpoints.h"
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/Host.h"
+#include "Core/MemMap.h"
 #include "Core/MIPS/MIPSAnalyst.h"
 #include "Core/MIPS/MIPSDebugInterface.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
 #include "Core/CoreTiming.h"
 
+std::atomic<bool> anyMemChecks_(false);
+
+static std::mutex breakPointsMutex_;
 std::vector<BreakPoint> CBreakPoints::breakPoints_;
 u32 CBreakPoints::breakSkipFirstAt_ = 0;
 u64 CBreakPoints::breakSkipFirstTicks_ = 0;
+static std::mutex memCheckMutex_;
 std::vector<MemCheck> CBreakPoints::memChecks_;
 std::vector<MemCheck *> CBreakPoints::cleanupMemChecks_;
 
-MemCheck::MemCheck()
-{
-	numHits = 0;
-}
-
-void MemCheck::Log(u32 addr, bool write, int size, u32 pc) {
+void MemCheck::Log(u32 addr, bool write, int size, u32 pc, const char *reason) {
 	if (result & BREAK_ACTION_LOG) {
+		const char *type = write ? "Write" : "Read";
 		if (logFormat.empty()) {
-			NOTICE_LOG(MEMMAP, "CHK %s%i at %08x (%s), PC=%08x (%s)", write ? "Write" : "Read", size * 8, addr, g_symbolMap->GetDescription(addr).c_str(), pc, g_symbolMap->GetDescription(pc).c_str());
+			NOTICE_LOG(MEMMAP, "CHK %s%i(%s) at %08x (%s), PC=%08x (%s)", type, size * 8, reason, addr, g_symbolMap->GetDescription(addr).c_str(), pc, g_symbolMap->GetDescription(pc).c_str());
 		} else {
 			std::string formatted;
 			CBreakPoints::EvaluateLogFormat(currentDebugMIPS, logFormat, formatted);
-			NOTICE_LOG(MEMMAP, "CHK %s%i at %08x: %s", write ? "Write" : "Read", size * 8, addr, formatted.c_str());
+			NOTICE_LOG(MEMMAP, "CHK %s%i(%s) at %08x: %s", type, size * 8, reason, addr, formatted.c_str());
 		}
 	}
 }
 
-BreakAction MemCheck::Action(u32 addr, bool write, int size, u32 pc)
-{
+BreakAction MemCheck::Apply(u32 addr, bool write, int size, u32 pc) {
 	int mask = write ? MEMCHECK_WRITE : MEMCHECK_READ;
-	if (cond & mask)
-	{
+	if (cond & mask) {
 		++numHits;
+		return result;
+	}
 
-		Log(addr, write, size, pc);
-		if (result & BREAK_ACTION_PAUSE)
-		{
+	return BREAK_ACTION_IGNORE;
+}
+
+BreakAction MemCheck::Action(u32 addr, bool write, int size, u32 pc, const char *reason) {
+	int mask = write ? MEMCHECK_WRITE : MEMCHECK_READ;
+	if (cond & mask) {
+		Log(addr, write, size, pc, reason);
+		if ((result & BREAK_ACTION_PAUSE) && coreState != CORE_POWERUP) {
 			Core_EnableStepping(true);
 			host->SetDebugMode(true);
 		}
@@ -70,38 +78,46 @@ BreakAction MemCheck::Action(u32 addr, bool write, int size, u32 pc)
 	return BREAK_ACTION_IGNORE;
 }
 
-void MemCheck::JitBefore(u32 addr, bool write, int size, u32 pc)
-{
+void MemCheck::JitBeforeApply(u32 addr, bool write, int size, u32 pc) {
 	int mask = MEMCHECK_WRITE | MEMCHECK_WRITE_ONCHANGE;
-	if (write && (cond & mask) == mask)
-	{
+	if (write && (cond & mask) == mask) {
 		lastAddr = addr;
 		lastPC = pc;
 		lastSize = size;
-
-		// We have to break to find out if it changed.
-		Core_EnableStepping(true);
-	}
-	else
-	{
+	} else {
 		lastAddr = 0;
-		Action(addr, write, size, pc);
+		Apply(addr, write, size, pc);
 	}
 }
 
-void MemCheck::JitCleanup()
-{
+void MemCheck::JitBeforeAction(u32 addr, bool write, int size, u32 pc) {
+	if (lastAddr) {
+		// We have to break to find out if it changed.
+		Core_EnableStepping(true);
+	} else {
+		Action(addr, write, size, pc, "CPU");
+	}
+}
+
+bool MemCheck::JitApplyChanged() {
 	if (lastAddr == 0 || lastPC == 0)
-		return;
+		return false;
 
 	// Here's the tricky part: would this have changed memory?
 	// Note that it did not actually get written.
 	bool changed = MIPSAnalyst::OpWouldChangeMemory(lastPC, lastAddr, lastSize);
 	if (changed)
-	{
 		++numHits;
-		Log(lastAddr, true, lastSize, lastPC);
-	}
+	return changed;
+}
+
+void MemCheck::JitCleanup(bool changed)
+{
+	if (lastAddr == 0 || lastPC == 0)
+		return;
+
+	if (changed)
+		Log(lastAddr, true, lastSize, lastPC, "CPU");
 
 	// Resume if it should not have gone to stepping, or if it did not change.
 	if ((!(result & BREAK_ACTION_PAUSE) || !changed) && coreState == CORE_STEPPING)
@@ -113,6 +129,7 @@ void MemCheck::JitCleanup()
 		host->SetDebugMode(true);
 }
 
+// Note: must lock while calling this.
 size_t CBreakPoints::FindBreakpoint(u32 addr, bool matchTemp, bool temp)
 {
 	size_t found = INVALID_BREAKPOINT;
@@ -145,12 +162,14 @@ size_t CBreakPoints::FindMemCheck(u32 start, u32 end)
 
 bool CBreakPoints::IsAddressBreakPoint(u32 addr)
 {
+	std::lock_guard<std::mutex> guard(breakPointsMutex_);
 	size_t bp = FindBreakpoint(addr);
 	return bp != INVALID_BREAKPOINT && breakPoints_[bp].result != BREAK_ACTION_IGNORE;
 }
 
 bool CBreakPoints::IsAddressBreakPoint(u32 addr, bool* enabled)
 {
+	std::lock_guard<std::mutex> guard(breakPointsMutex_);
 	size_t bp = FindBreakpoint(addr);
 	if (bp == INVALID_BREAKPOINT) return false;
 	if (enabled != nullptr)
@@ -160,12 +179,14 @@ bool CBreakPoints::IsAddressBreakPoint(u32 addr, bool* enabled)
 
 bool CBreakPoints::IsTempBreakPoint(u32 addr)
 {
+	std::lock_guard<std::mutex> guard(breakPointsMutex_);
 	size_t bp = FindBreakpoint(addr, true, true);
 	return bp != INVALID_BREAKPOINT;
 }
 
 bool CBreakPoints::RangeContainsBreakPoint(u32 addr, u32 size)
 {
+	std::lock_guard<std::mutex> guard(breakPointsMutex_);
 	const u32 end = addr + size;
 	for (const auto &bp : breakPoints_)
 	{
@@ -178,6 +199,7 @@ bool CBreakPoints::RangeContainsBreakPoint(u32 addr, u32 size)
 
 void CBreakPoints::AddBreakPoint(u32 addr, bool temp)
 {
+	std::unique_lock<std::mutex> guard(breakPointsMutex_);
 	size_t bp = FindBreakpoint(addr, true, temp);
 	if (bp == INVALID_BREAKPOINT)
 	{
@@ -187,18 +209,21 @@ void CBreakPoints::AddBreakPoint(u32 addr, bool temp)
 		pt.addr = addr;
 
 		breakPoints_.push_back(pt);
+		guard.unlock();
 		Update(addr);
 	}
 	else if (!breakPoints_[bp].IsEnabled())
 	{
 		breakPoints_[bp].result |= BREAK_ACTION_PAUSE;
 		breakPoints_[bp].hasCond = false;
+		guard.unlock();
 		Update(addr);
 	}
 }
 
 void CBreakPoints::RemoveBreakPoint(u32 addr)
 {
+	std::unique_lock<std::mutex> guard(breakPointsMutex_);
 	size_t bp = FindBreakpoint(addr);
 	if (bp != INVALID_BREAKPOINT)
 	{
@@ -209,12 +234,14 @@ void CBreakPoints::RemoveBreakPoint(u32 addr)
 		if (bp != INVALID_BREAKPOINT)
 			breakPoints_.erase(breakPoints_.begin() + bp);
 
+		guard.unlock();
 		Update(addr);
 	}
 }
 
 void CBreakPoints::ChangeBreakPoint(u32 addr, bool status)
 {
+	std::unique_lock<std::mutex> guard(breakPointsMutex_);
 	size_t bp = FindBreakpoint(addr);
 	if (bp != INVALID_BREAKPOINT)
 	{
@@ -222,31 +249,38 @@ void CBreakPoints::ChangeBreakPoint(u32 addr, bool status)
 			breakPoints_[bp].result |= BREAK_ACTION_PAUSE;
 		else
 			breakPoints_[bp].result = BreakAction(breakPoints_[bp].result & ~BREAK_ACTION_PAUSE);
+
+		guard.unlock();
 		Update(addr);
 	}
 }
 
 void CBreakPoints::ChangeBreakPoint(u32 addr, BreakAction result)
 {
+	std::unique_lock<std::mutex> guard(breakPointsMutex_);
 	size_t bp = FindBreakpoint(addr);
 	if (bp != INVALID_BREAKPOINT)
 	{
 		breakPoints_[bp].result = result;
+		guard.unlock();
 		Update(addr);
 	}
 }
 
 void CBreakPoints::ClearAllBreakPoints()
 {
+	std::unique_lock<std::mutex> guard(breakPointsMutex_);
 	if (!breakPoints_.empty())
 	{
 		breakPoints_.clear();
+		guard.unlock();
 		Update();
 	}
 }
 
 void CBreakPoints::ClearTemporaryBreakPoints()
 {
+	std::unique_lock<std::mutex> guard(breakPointsMutex_);
 	if (breakPoints_.empty())
 		return;
 
@@ -259,73 +293,85 @@ void CBreakPoints::ClearTemporaryBreakPoints()
 			update = true;
 		}
 	}
-	
+
+	guard.unlock();
 	if (update)
 		Update();
 }
 
 void CBreakPoints::ChangeBreakPointAddCond(u32 addr, const BreakPointCond &cond)
 {
-	size_t bp = FindBreakpoint(addr, true, false);
+	std::unique_lock<std::mutex> guard(breakPointsMutex_);
+	size_t bp = FindBreakpoint(addr);
 	if (bp != INVALID_BREAKPOINT)
 	{
 		breakPoints_[bp].hasCond = true;
 		breakPoints_[bp].cond = cond;
+		guard.unlock();
 		Update(addr);
 	}
 }
 
 void CBreakPoints::ChangeBreakPointRemoveCond(u32 addr)
 {
-	size_t bp = FindBreakpoint(addr, true, false);
+	std::unique_lock<std::mutex> guard(breakPointsMutex_);
+	size_t bp = FindBreakpoint(addr);
 	if (bp != INVALID_BREAKPOINT)
 	{
 		breakPoints_[bp].hasCond = false;
+		guard.unlock();
 		Update(addr);
 	}
 }
 
 BreakPointCond *CBreakPoints::GetBreakPointCondition(u32 addr)
 {
-	size_t bp = FindBreakpoint(addr, true, false);
+	std::lock_guard<std::mutex> guard(breakPointsMutex_);
+	size_t bp = FindBreakpoint(addr);
 	if (bp != INVALID_BREAKPOINT && breakPoints_[bp].hasCond)
 		return &breakPoints_[bp].cond;
 	return NULL;
 }
 
 void CBreakPoints::ChangeBreakPointLogFormat(u32 addr, const std::string &fmt) {
+	std::unique_lock<std::mutex> guard(breakPointsMutex_);
 	size_t bp = FindBreakpoint(addr, true, false);
 	if (bp != INVALID_BREAKPOINT) {
 		breakPoints_[bp].logFormat = fmt;
+		guard.unlock();
 		Update(addr);
 	}
 }
 
 BreakAction CBreakPoints::ExecBreakPoint(u32 addr) {
+	std::unique_lock<std::mutex> guard(breakPointsMutex_);
 	size_t bp = FindBreakpoint(addr, false);
 	if (bp != INVALID_BREAKPOINT) {
-		if (breakPoints_[bp].hasCond) {
+		BreakPoint info = breakPoints_[bp];
+		guard.unlock();
+
+		if (info.hasCond) {
 			// Evaluate the breakpoint and abort if necessary.
 			auto cond = CBreakPoints::GetBreakPointCondition(currentMIPS->pc);
 			if (cond && !cond->Evaluate())
 				return BREAK_ACTION_IGNORE;
 		}
 
-		if (breakPoints_[bp].result & BREAK_ACTION_LOG) {
-			if (breakPoints_[bp].logFormat.empty()) {
+		if (info.result & BREAK_ACTION_LOG) {
+			if (info.logFormat.empty()) {
 				NOTICE_LOG(JIT, "BKP PC=%08x (%s)", addr, g_symbolMap->GetDescription(addr).c_str());
 			} else {
 				std::string formatted;
-				CBreakPoints::EvaluateLogFormat(currentDebugMIPS, breakPoints_[bp].logFormat, formatted);
+				CBreakPoints::EvaluateLogFormat(currentDebugMIPS, info.logFormat, formatted);
 				NOTICE_LOG(JIT, "BKP PC=%08x: %s", addr, formatted.c_str());
 			}
 		}
-		if (breakPoints_[bp].result & BREAK_ACTION_PAUSE) {
+		if ((info.result & BREAK_ACTION_PAUSE) && coreState != CORE_POWERUP) {
 			Core_EnableStepping(true);
 			host->SetDebugMode(true);
 		}
 
-		return breakPoints_[bp].result;
+		return info.result;
 	}
 
 	return BREAK_ACTION_IGNORE;
@@ -333,6 +379,7 @@ BreakAction CBreakPoints::ExecBreakPoint(u32 addr) {
 
 void CBreakPoints::AddMemCheck(u32 start, u32 end, MemCheckCondition cond, BreakAction result)
 {
+	std::unique_lock<std::mutex> guard(memCheckMutex_);
 	// This will ruin any pending memchecks.
 	cleanupMemChecks_.clear();
 
@@ -346,18 +393,23 @@ void CBreakPoints::AddMemCheck(u32 start, u32 end, MemCheckCondition cond, Break
 		check.result = result;
 
 		memChecks_.push_back(check);
+		anyMemChecks_ = true;
+		guard.unlock();
 		Update();
 	}
 	else
 	{
 		memChecks_[mc].cond = (MemCheckCondition)(memChecks_[mc].cond | cond);
 		memChecks_[mc].result = (BreakAction)(memChecks_[mc].result | result);
+		anyMemChecks_ = true;
+		guard.unlock();
 		Update();
 	}
 }
 
 void CBreakPoints::RemoveMemCheck(u32 start, u32 end)
 {
+	std::unique_lock<std::mutex> guard(memCheckMutex_);
 	// This will ruin any pending memchecks.
 	cleanupMemChecks_.clear();
 
@@ -365,39 +417,57 @@ void CBreakPoints::RemoveMemCheck(u32 start, u32 end)
 	if (mc != INVALID_MEMCHECK)
 	{
 		memChecks_.erase(memChecks_.begin() + mc);
+		anyMemChecks_ = !memChecks_.empty();
+		guard.unlock();
 		Update();
 	}
 }
 
 void CBreakPoints::ChangeMemCheck(u32 start, u32 end, MemCheckCondition cond, BreakAction result)
 {
+	std::unique_lock<std::mutex> guard(memCheckMutex_);
 	size_t mc = FindMemCheck(start, end);
 	if (mc != INVALID_MEMCHECK)
 	{
 		memChecks_[mc].cond = cond;
 		memChecks_[mc].result = result;
+		guard.unlock();
 		Update();
 	}
 }
 
 void CBreakPoints::ClearAllMemChecks()
 {
+	std::unique_lock<std::mutex> guard(memCheckMutex_);
 	// This will ruin any pending memchecks.
 	cleanupMemChecks_.clear();
 
 	if (!memChecks_.empty())
 	{
 		memChecks_.clear();
+		guard.unlock();
 		Update();
 	}
 }
 
 void CBreakPoints::ChangeMemCheckLogFormat(u32 start, u32 end, const std::string &fmt) {
+	std::unique_lock<std::mutex> guard(memCheckMutex_);
 	size_t mc = FindMemCheck(start, end);
 	if (mc != INVALID_MEMCHECK) {
 		memChecks_[mc].logFormat = fmt;
+		guard.unlock();
 		Update();
 	}
+}
+
+bool CBreakPoints::GetMemCheck(u32 start, u32 end, MemCheck *check) {
+	std::lock_guard<std::mutex> guard(memCheckMutex_);
+	size_t mc = FindMemCheck(start, end);
+	if (mc != INVALID_MEMCHECK) {
+		*check = memChecks_[mc];
+		return true;
+	}
+	return false;
 }
 
 static inline u32 NotCached(u32 val)
@@ -406,8 +476,15 @@ static inline u32 NotCached(u32 val)
 	return val & ~0x40000000;
 }
 
-MemCheck *CBreakPoints::GetMemCheck(u32 address, int size)
-{
+bool CBreakPoints::GetMemCheckInRange(u32 address, int size, MemCheck *check) {
+	std::lock_guard<std::mutex> guard(memCheckMutex_);
+	auto result = GetMemCheckLocked(address, size);
+	if (result)
+		*check = *result;
+	return result != nullptr;
+}
+
+MemCheck *CBreakPoints::GetMemCheckLocked(u32 address, int size) {
 	std::vector<MemCheck>::iterator iter;
 	for (iter = memChecks_.begin(); iter != memChecks_.end(); ++iter)
 	{
@@ -428,11 +505,18 @@ MemCheck *CBreakPoints::GetMemCheck(u32 address, int size)
 	return 0;
 }
 
-BreakAction CBreakPoints::ExecMemCheck(u32 address, bool write, int size, u32 pc)
+BreakAction CBreakPoints::ExecMemCheck(u32 address, bool write, int size, u32 pc, const char *reason)
 {
-	auto check = GetMemCheck(address, size);
-	if (check)
-		return check->Action(address, write, size, pc);
+	if (!anyMemChecks_)
+		return BREAK_ACTION_IGNORE;
+	std::unique_lock<std::mutex> guard(memCheckMutex_);
+	auto check = GetMemCheckLocked(address, size);
+	if (check) {
+		check->Apply(address, write, size, pc);
+		auto copy = *check;
+		guard.unlock();
+		return copy.Action(address, write, size, pc, reason);
+	}
 	return BREAK_ACTION_IGNORE;
 }
 
@@ -448,15 +532,23 @@ BreakAction CBreakPoints::ExecOpMemCheck(u32 address, u32 pc)
 	}
 
 	bool write = MIPSAnalyst::IsOpMemoryWrite(pc);
-	auto check = GetMemCheck(address, size);
+	std::unique_lock<std::mutex> guard(memCheckMutex_);
+	auto check = GetMemCheckLocked(address, size);
 	if (check) {
 		int mask = MEMCHECK_WRITE | MEMCHECK_WRITE_ONCHANGE;
+		bool apply = false;
 		if (write && (check->cond & mask) == mask) {
 			if (MIPSAnalyst::OpWouldChangeMemory(pc, address, size)) {
-				return check->Action(address, write, size, pc);
+				apply = true;
 			}
 		} else {
-			return check->Action(address, write, size, pc);
+			apply = true;
+		}
+		if (apply) {
+			check->Apply(address, write, size, pc);
+			auto copy = *check;
+			guard.unlock();
+			return copy.Action(address, write, size, pc, "CPU");
 		}
 	}
 	return BREAK_ACTION_IGNORE;
@@ -464,18 +556,28 @@ BreakAction CBreakPoints::ExecOpMemCheck(u32 address, u32 pc)
 
 void CBreakPoints::ExecMemCheckJitBefore(u32 address, bool write, int size, u32 pc)
 {
-	auto check = GetMemCheck(address, size);
+	std::unique_lock<std::mutex> guard(memCheckMutex_);
+	auto check = GetMemCheckLocked(address, size);
 	if (check) {
-		check->JitBefore(address, write, size, pc);
+		check->JitBeforeApply(address, write, size, pc);
+		auto copy = *check;
+		guard.unlock();
+		copy.JitBeforeAction(address, write, size, pc);
+		guard.lock();
 		cleanupMemChecks_.push_back(check);
 	}
 }
 
 void CBreakPoints::ExecMemCheckJitCleanup()
 {
+	std::unique_lock<std::mutex> guard(memCheckMutex_);
 	for (auto it = cleanupMemChecks_.begin(), end = cleanupMemChecks_.end(); it != end; ++it) {
 		auto check = *it;
-		check->JitCleanup();
+		bool changed = check->JitApplyChanged();
+		auto copy = *check;
+		guard.unlock();
+		copy.JitCleanup(changed);
+		guard.lock();
 	}
 	cleanupMemChecks_.clear();
 }
@@ -493,17 +595,21 @@ u32 CBreakPoints::CheckSkipFirst()
 	return 0;
 }
 
-const std::vector<MemCheck> CBreakPoints::GetMemCheckRanges()
-{
+const std::vector<MemCheck> CBreakPoints::GetMemCheckRanges(bool write) {
+	std::lock_guard<std::mutex> guard(memCheckMutex_);
 	std::vector<MemCheck> ranges = memChecks_;
-	for (auto it = memChecks_.begin(), end = memChecks_.end(); it != end; ++it)
-	{
-		MemCheck check = *it;
+	for (const auto &check : memChecks_) {
+		if (!(check.cond & MEMCHECK_READ) && !write)
+			continue;
+		if (!(check.cond & MEMCHECK_WRITE) && write)
+			continue;
+
+		MemCheck copy = check;
 		// Toggle the cached part of the address.
-		check.start ^= 0x40000000;
-		if (check.end != 0)
-			check.end ^= 0x40000000;
-		ranges.push_back(check);
+		copy.start ^= 0x40000000;
+		if (copy.end != 0)
+			copy.end ^= 0x40000000;
+		ranges.push_back(copy);
 	}
 
 	return ranges;
@@ -511,16 +617,19 @@ const std::vector<MemCheck> CBreakPoints::GetMemCheckRanges()
 
 const std::vector<MemCheck> CBreakPoints::GetMemChecks()
 {
+	std::lock_guard<std::mutex> guard(memCheckMutex_);
 	return memChecks_;
 }
 
 const std::vector<BreakPoint> CBreakPoints::GetBreakpoints()
 {
+	std::lock_guard<std::mutex> guard(breakPointsMutex_);
 	return breakPoints_;
 }
 
 bool CBreakPoints::HasMemChecks()
 {
+	std::lock_guard<std::mutex> guard(memCheckMutex_);
 	return !memChecks_.empty();
 }
 
@@ -540,7 +649,7 @@ void CBreakPoints::Update(u32 addr)
 		if (addr != 0)
 			MIPSComp::jit->InvalidateCacheAt(addr - 4, 8);
 		else
-			MIPSComp::jit->InvalidateCache();
+			MIPSComp::jit->ClearCache();
 
 		if (resume)
 			Core_EnableStepping(false);
@@ -582,17 +691,55 @@ bool CBreakPoints::EvaluateLogFormat(DebugInterface *cpu, const std::string &fmt
 		if (expression.empty()) {
 			result += "{}";
 		} else {
+			int type = 'x';
+			if (expression.length() > 2 && expression[expression.length() - 2] == ':') {
+				switch (expression[expression.length() - 1]) {
+				case 'd':
+				case 'f':
+				case 'p':
+				case 's':
+				case 'x':
+					type = expression[expression.length() - 1];
+					expression.resize(expression.length() - 2);
+					break;
+
+				default:
+					// Assume a ternary.
+					break;
+				}
+			}
+
 			if (!cpu->initExpression(expression.c_str(), exp)) {
 				return false;
 			}
 
-			u32 expResult;
-			char resultString[32];
-			if (!cpu->parseExpression(exp, expResult)) {
+			union {
+				int i;
+				u32 u;
+				float f;
+			} expResult;
+			char resultString[256];
+			if (!cpu->parseExpression(exp, expResult.u)) {
 				return false;
 			}
 
-			snprintf(resultString, 32, "%08x", expResult);
+			switch (type) {
+			case 'd':
+				snprintf(resultString, sizeof(resultString), "%d", expResult.i);
+				break;
+			case 'f':
+				snprintf(resultString, sizeof(resultString), "%f", expResult.f);
+				break;
+			case 'p':
+				snprintf(resultString, sizeof(resultString), "%08x[%08x]", expResult.u, Memory::IsValidAddress(expResult.u) ? Memory::Read_U32(expResult.u) : 0);
+				break;
+			case 's':
+				snprintf(resultString, sizeof(resultString) - 1, "%s", Memory::IsValidAddress(expResult.u) ? Memory::GetCharPointer(expResult.u) : "(invalid)");
+				break;
+			case 'x':
+				snprintf(resultString, sizeof(resultString), "%08x", expResult.u);
+				break;
+			}
 			result += resultString;
 		}
 

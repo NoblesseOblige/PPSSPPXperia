@@ -2,16 +2,19 @@ package org.ppsspp.ppsspp;
 
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
 import android.util.Log;
-import android.widget.Toast;
 
 public class PpssppActivity extends NativeActivity {
 	private static final String TAG = "PpssppActivity";
 	// Key used by shortcut.
 	public static final String SHORTCUT_EXTRA_KEY = "org.ppsspp.ppsspp.Shortcuts";
+	// Key used for debugging.
+	public static final String ARGS_EXTRA_KEY = "org.ppsspp.ppsspp.Args";
 
 	private static boolean m_hasUnsupportedABI = false;
 	private static boolean m_hasNoNativeBinary = false;
@@ -57,7 +60,6 @@ public class PpssppActivity extends NativeActivity {
 					}
 					Looper.loop();
 				}
-
 			}.start();
 
 			try {
@@ -74,15 +76,28 @@ public class PpssppActivity extends NativeActivity {
 		// using Intent extra string. Intent extra will be null if launch normal
 		// (from app drawer or file explorer).
 		Intent intent = getIntent();
-		String action = intent.getAction();
-		if (Intent.ACTION_VIEW.equals(action)) {
+		// String action = intent.getAction();
+		Uri data = intent.getData();
+		if (data != null) {
 			String path = intent.getData().getPath();
-			super.setShortcutParam(path);
-			Toast.makeText(getApplicationContext(), path, Toast.LENGTH_SHORT).show();
+			Log.i(TAG, "Found Shortcut Parameter in data: " + path);
+			super.setShortcutParam("\"" + path.replace("\\", "\\\\").replace("\"", "\\\"") + "\"");
+			// Toast.makeText(getApplicationContext(), path, Toast.LENGTH_SHORT).show();
 		} else {
-			super.setShortcutParam(getIntent().getStringExtra(SHORTCUT_EXTRA_KEY));
+			String param = getIntent().getStringExtra(SHORTCUT_EXTRA_KEY);
+			String args = getIntent().getStringExtra(ARGS_EXTRA_KEY);
+			Log.e(TAG, "Got ACTION_VIEW without a valid uri, trying param");
+			if (param != null) {
+				Log.i(TAG, "Found Shortcut Parameter in extra-data: " + param);
+				super.setShortcutParam("\"" + param.replace("\\", "\\\\").replace("\"", "\\\"") + "\"");
+			} else if (args != null) {
+				Log.i(TAG, "Found args parameter in extra-data: " + args);
+				super.setShortcutParam(args);
+			} else {
+				Log.e(TAG, "Shortcut missing parameter!");
+				super.setShortcutParam("");
+			}
 		}
-
 		super.onCreate(savedInstanceState);
 	}
 
@@ -97,5 +112,20 @@ public class PpssppActivity extends NativeActivity {
 				processCommand(cmd, param);
 			}
 		});
+	}
+
+	public int openContentUri(String uriString) {
+		try {
+			Uri uri = Uri.parse(uriString);
+			ParcelFileDescriptor filePfd = getContentResolver().openFileDescriptor(uri, "r");
+			if (filePfd == null) {
+				Log.e(TAG, "Failed to get file descriptor for " + uriString);
+				return -1;
+			}
+			return filePfd.detachFd();  // Take ownership of the fd.
+		} catch (Exception e) {
+			Log.e(TAG, "Exception opening content uri: " + e.toString());
+			return -1;
+		}
 	}
 }

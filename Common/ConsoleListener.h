@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "LogManager.h"
 
 #ifdef _WIN32
@@ -39,11 +41,12 @@ public:
 #if defined(USING_WIN_UI)
 	COORD GetCoordinates(int BytesRead, int BufferWidth);
 #endif
-	void Log(LogTypes::LOG_LEVELS, const char *Text);
+	void Log(const LogMessage &message);
 	void ClearScreen(bool Cursor = true);
 
 	void Show(bool bShow);
 	bool Hidden() const { return bHidden; }
+
 private:
 #if defined(USING_WIN_UI)
 	HWND hWnd;
@@ -60,8 +63,8 @@ private:
 	static CRITICAL_SECTION criticalSection;
 
 	static char *logPending;
-	static volatile u32 logPendingReadPos;
-	static volatile u32 logPendingWritePos;
+	static std::atomic<uint32_t> logPendingReadPos;
+	static std::atomic<uint32_t> logPendingWritePos;
 
 	int openWidth_;
 	int openHeight_;

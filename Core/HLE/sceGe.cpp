@@ -17,10 +17,13 @@
 
 #include <map>
 #include <vector>
+#include <mutex>
 
-#include "base/mutex.h"
-#include "Common/ChunkFile.h"
-#include "Common/ThreadSafeList.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/Serialize/SerializeList.h"
+#include "Common/Serialize/SerializeMap.h"
+#include "Common/Data/Collections/ThreadSafeList.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/MIPS/MIPS.h"
@@ -56,10 +59,6 @@ static ThreadSafeList<GeInterruptData> ge_pending_cb;
 static int geSyncEvent;
 static int geInterruptEvent;
 static int geCycleEvent;
-
-// Let's try updating 10 times per vblank - this is the interval for geCycleEvent.
-const int geIntervalUs = 1000000 / (60 * 10);
-const int geBehindThresholdUs = 1000000 / (60 * 10);
 
 class GeIntrHandler : public IntrHandler {
 public:
@@ -194,19 +193,7 @@ static void __GeExecuteInterrupt(u64 userdata, int cyclesLate) {
 }
 
 static void __GeCheckCycles(u64 userdata, int cyclesLate) {
-	u64 geTicks = gpu->GetTickEstimate();
-	if (geTicks != 0) {
-		if (CoreTiming::GetTicks() > geTicks + usToCycles(geBehindThresholdUs)) {
-			u64 diff = CoreTiming::GetTicks() - geTicks;
-			// Let the GPU thread catch up.
-			gpu->SyncThread();
-			CoreTiming::Advance();
-		}
-	}
-
-	// This may get out of step if we synced (because we don't correct for cyclesLate),
-	// but that's okay - __GeCheckCycles is a very rough way to synchronize anyway.
-	CoreTiming::ScheduleEvent(usToCycles(geIntervalUs), geCycleEvent, 0);
+	// Deprecated
 }
 
 void __GeInit() {
@@ -217,15 +204,12 @@ void __GeInit() {
 
 	geSyncEvent = CoreTiming::RegisterEvent("GeSyncEvent", &__GeExecuteSync);
 	geInterruptEvent = CoreTiming::RegisterEvent("GeInterruptEvent", &__GeExecuteInterrupt);
+
+	// Deprecated
 	geCycleEvent = CoreTiming::RegisterEvent("GeCycleEvent", &__GeCheckCycles);
 
 	listWaitingThreads.clear();
 	drawWaitingThreads.clear();
-
-	// When we're using separate CPU/GPU threads, we need to keep them in sync.
-	if (IsOnSeparateCPUThread()) {
-		CoreTiming::ScheduleEvent(usToCycles(geIntervalUs), geCycleEvent, 0);
-	}
 }
 
 struct GeInterruptData_v1 {
@@ -238,14 +222,14 @@ void __GeDoState(PointerWrap &p) {
 	if (!s)
 		return;
 
-	p.DoArray(ge_callback_data, ARRAY_SIZE(ge_callback_data));
-	p.DoArray(ge_used_callbacks, ARRAY_SIZE(ge_used_callbacks));
+	DoArray(p, ge_callback_data, ARRAY_SIZE(ge_callback_data));
+	DoArray(p, ge_used_callbacks, ARRAY_SIZE(ge_used_callbacks));
 
 	if (s >= 2) {
-		p.Do(ge_pending_cb);
+		Do(p, ge_pending_cb);
 	} else {
 		std::list<GeInterruptData_v1> old;
-		p.Do(old);
+		Do(p, old);
 		ge_pending_cb.clear();
 		for (auto it = old.begin(), end = old.end(); it != end; ++it) {
 			GeInterruptData intrdata = {it->listid, it->pc};
@@ -254,15 +238,15 @@ void __GeDoState(PointerWrap &p) {
 		}
 	}
 
-	p.Do(geSyncEvent);
+	Do(p, geSyncEvent);
 	CoreTiming::RestoreRegisterEvent(geSyncEvent, "GeSyncEvent", &__GeExecuteSync);
-	p.Do(geInterruptEvent);
+	Do(p, geInterruptEvent);
 	CoreTiming::RestoreRegisterEvent(geInterruptEvent, "GeInterruptEvent", &__GeExecuteInterrupt);
-	p.Do(geCycleEvent);
+	Do(p, geCycleEvent);
 	CoreTiming::RestoreRegisterEvent(geCycleEvent, "GeCycleEvent", &__GeCheckCycles);
 
-	p.Do(listWaitingThreads);
-	p.Do(drawWaitingThreads);
+	Do(p, listWaitingThreads);
+	Do(p, drawWaitingThreads);
 
 	// Everything else is done in sceDisplay.
 }
@@ -270,20 +254,18 @@ void __GeDoState(PointerWrap &p) {
 void __GeShutdown() {
 }
 
-// Warning: may be called from the GPU thread, if there is a separate one (multithread mode).
 bool __GeTriggerSync(GPUSyncType type, int id, u64 atTicks) {
 	u64 userdata = (u64)id << 32 | (u64)type;
 	s64 future = atTicks - CoreTiming::GetTicks();
 	if (type == GPU_SYNC_DRAW) {
-		s64 left = CoreTiming::UnscheduleThreadsafeEvent(geSyncEvent, userdata);
+		s64 left = CoreTiming::UnscheduleEvent(geSyncEvent, userdata);
 		if (left > future)
 			future = left;
 	}
-	CoreTiming::ScheduleEvent_Threadsafe(future, geSyncEvent, userdata);
+	CoreTiming::ScheduleEvent(future, geSyncEvent, userdata);
 	return true;
 }
 
-// Warning: may be called from the GPU thread, if there is a separate one (multithread mode).
 bool __GeTriggerInterrupt(int listid, u32 pc, u64 atTicks) {
 	GeInterruptData intrdata;
 	intrdata.listid = listid;
@@ -293,7 +275,7 @@ bool __GeTriggerInterrupt(int listid, u32 pc, u64 atTicks) {
 	ge_pending_cb.push_back(intrdata);
 
 	u64 userdata = (u64)listid << 32 | (u64) pc;
-	CoreTiming::ScheduleEvent_Threadsafe(atTicks - CoreTiming::GetTicks(), geInterruptEvent, userdata);
+	CoreTiming::ScheduleEvent(atTicks - CoreTiming::GetTicks(), geInterruptEvent, userdata);
 	return true;
 }
 
@@ -361,10 +343,9 @@ u32 sceGeListEnQueue(u32 listAddress, u32 stallAddress, int callbackId, u32 optP
 	if ((int)listID >= 0)
 		listID = LIST_ID_MAGIC ^ listID;
 
-	DEBUG_LOG(SCEGE, "List %i enqueued.", listID);
 	hleEatCycles(490);
 	CoreTiming::ForceCheck();
-	return listID;
+	return hleLogSuccessX(SCEGE, listID);
 }
 
 u32 sceGeListEnQueueHead(u32 listAddress, u32 stallAddress, int callbackId, u32 optParamAddr) {
@@ -377,10 +358,9 @@ u32 sceGeListEnQueueHead(u32 listAddress, u32 stallAddress, int callbackId, u32 
 	if ((int)listID >= 0)
 		listID = LIST_ID_MAGIC ^ listID;
 
-	DEBUG_LOG(SCEGE, "List %i enqueued at head.", listID);
 	hleEatCycles(480);
 	CoreTiming::ForceCheck();
-	return listID;
+	return hleLogSuccessX(SCEGE, listID);
 }
 
 static int sceGeListDeQueue(u32 listID) {
@@ -408,6 +388,8 @@ int sceGeListSync(u32 displayListID, u32 mode) {
 
 static u32 sceGeDrawSync(u32 mode) {
 	//wait/check entire drawing state
+	if (PSP_CoreParameter().compat.flags().DrawSyncEatCycles)
+		hleEatCycles(500000); //HACK(?) : Potential fix for Crash Tag Team Racing and a few Gundam games
 	DEBUG_LOG(SCEGE, "sceGeDrawSync(mode=%d)  (0=wait for completion, 1=peek)", mode);
 	return gpu->DrawSync(mode);
 }
@@ -502,7 +484,6 @@ static int sceGeUnsetCallback(u32 cbID) {
 // unless some insane game pokes it and relies on it...
 u32 sceGeSaveContext(u32 ctxAddr) {
 	DEBUG_LOG(SCEGE, "sceGeSaveContext(%08x)", ctxAddr);
-	gpu->SyncThread();
 
 	if (gpu->BusyDrawing()) {
 		WARN_LOG(SCEGE, "sceGeSaveContext(%08x): lists in process, aborting", ctxAddr);
@@ -522,7 +503,6 @@ u32 sceGeSaveContext(u32 ctxAddr) {
 
 u32 sceGeRestoreContext(u32 ctxAddr) {
 	DEBUG_LOG(SCEGE, "sceGeRestoreContext(%08x)", ctxAddr);
-	gpu->SyncThread();
 
 	if (gpu->BusyDrawing()) {
 		WARN_LOG(SCEGE, "sceGeRestoreContext(%08x): lists in process, aborting", ctxAddr);
@@ -583,12 +563,11 @@ static int sceGeGetMtx(int type, u32 matrixPtr) {
 }
 
 static u32 sceGeGetCmd(int cmd) {
-	INFO_LOG(SCEGE, "sceGeGetCmd(%i)", cmd);
 	if (cmd >= 0 && cmd < (int)ARRAY_SIZE(gstate.cmdmem)) {
-		return gstate.cmdmem[cmd];  // Does not mask away the high bits.
-	} else {
-		return SCE_KERNEL_ERROR_INVALID_INDEX;
+		// Does not mask away the high bits.
+		return hleLogSuccessInfoX(SCEGE, gstate.cmdmem[cmd]);
 	}
+	return hleLogError(SCEGE, SCE_KERNEL_ERROR_INVALID_INDEX);
 }
 
 static int sceGeGetStack(int index, u32 stackPtr) {
@@ -615,8 +594,8 @@ static u32 sceGeEdramSetAddrTranslation(int new_size) {
 
 const HLEFunction sceGe_user[] = {
 	{0XE47E40E4, &WrapU_V<sceGeEdramGetAddr>,            "sceGeEdramGetAddr",            'x', ""    },
-	{0XAB49E76A, &WrapU_UUIU<sceGeListEnQueue>,          "sceGeListEnQueue",             'x', "xxix"},
-	{0X1C0D95A6, &WrapU_UUIU<sceGeListEnQueueHead>,      "sceGeListEnQueueHead",         'x', "xxix"},
+	{0XAB49E76A, &WrapU_UUIU<sceGeListEnQueue>,          "sceGeListEnQueue",             'x', "xxip"},
+	{0X1C0D95A6, &WrapU_UUIU<sceGeListEnQueueHead>,      "sceGeListEnQueueHead",         'x', "xxip"},
 	{0XE0D68148, &WrapI_UU<sceGeListUpdateStallAddr>,    "sceGeListUpdateStallAddr",     'i', "xx"  },
 	{0X03444EB4, &WrapI_UU<sceGeListSync>,               "sceGeListSync",                'i', "xx"  },
 	{0XB287BD61, &WrapU_U<sceGeDrawSync>,                "sceGeDrawSync",                'x', "x"   },

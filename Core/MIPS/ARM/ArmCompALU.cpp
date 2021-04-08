@@ -19,11 +19,14 @@
 #if PPSSPP_ARCH(ARM)
 
 #include <algorithm>
+
+#include "Common/BitSet.h"
+#include "Common/CPUDetect.h"
+#include "Common/Data/Convert/SmallDataConvert.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/MIPS/MIPSCodeUtils.h"
 #include "Core/MIPS/ARM/ArmJit.h"
 #include "Core/MIPS/ARM/ArmRegCache.h"
-#include "Common/CPUDetect.h"
 
 using namespace MIPSAnalyst;
 
@@ -42,8 +45,8 @@ using namespace MIPSAnalyst;
 // All functions should have CONDITIONAL_DISABLE, so we can narrow things down to a file quickly.
 // Currently known non working ones should have DISABLE.
 
-// #define CONDITIONAL_DISABLE { Comp_Generic(op); return; }
-#define CONDITIONAL_DISABLE ;
+// #define CONDITIONAL_DISABLE(flag) { Comp_Generic(op); return; }
+#define CONDITIONAL_DISABLE(flag) if (jo.Disabled(JitDisable::flag)) { Comp_Generic(op); return; }
 #define DISABLE { Comp_Generic(op); return; }
 
 namespace MIPSComp
@@ -72,10 +75,10 @@ namespace MIPSComp
 
 	void ArmJit::Comp_IType(MIPSOpcode op)
 	{
-		CONDITIONAL_DISABLE;
-		s32 simm = (s32)(s16)(op & 0xFFFF);  // sign extension
+		CONDITIONAL_DISABLE(ALU_IMM);
 		u32 uimm = op & 0xFFFF;
-		u32 suimm = (u32)(s32)simm;
+		s32 simm = SignExtend16ToS32(op);
+		u32 suimm = SignExtend16ToU32(op);
 
 		MIPSGPReg rt = _RT;
 		MIPSGPReg rs = _RS;
@@ -150,7 +153,7 @@ namespace MIPSComp
 
 	void ArmJit::Comp_RType2(MIPSOpcode op)
 	{
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(ALU_BIT);
 		MIPSGPReg rs = _RS;
 		MIPSGPReg rd = _RD;
 
@@ -234,7 +237,7 @@ namespace MIPSComp
 
 	void ArmJit::Comp_RType3(MIPSOpcode op)
 	{
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(ALU);
 		MIPSGPReg rt = _RT;
 		MIPSGPReg rs = _RS;
 		MIPSGPReg rd = _RD;
@@ -502,7 +505,7 @@ namespace MIPSComp
 
 	void ArmJit::Comp_ShiftType(MIPSOpcode op)
 	{
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(ALU);
 		MIPSGPReg rs = _RS;
 		MIPSGPReg rd = _RD;
 		int fd = _FD;
@@ -529,7 +532,7 @@ namespace MIPSComp
 
 	void ArmJit::Comp_Special3(MIPSOpcode op)
 	{
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(ALU_BIT);
 
 		MIPSGPReg rs = _RS;
 		MIPSGPReg rt = _RT;
@@ -591,7 +594,7 @@ namespace MIPSComp
 
 	void ArmJit::Comp_Allegrex(MIPSOpcode op)
 	{
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(ALU_BIT);
 		MIPSGPReg rt = _RT;
 		MIPSGPReg rd = _RD;
 		// Don't change $zr.
@@ -599,9 +602,9 @@ namespace MIPSComp
 			return;
 
 		switch ((op >> 6) & 31) {
-		case 16: // seb	// R(rd) = (u32)(s32)(s8)(u8)R(rt);
+		case 16: // seb	// R(rd) = SignExtend8ToU32(R(rt));
 			if (gpr.IsImm(rt)) {
-				gpr.SetImm(rd, (s32)(s8)(u8)gpr.GetImm(rt));
+				gpr.SetImm(rd, SignExtend8ToU32(gpr.GetImm(rt)));
 				return;
 			}
 			gpr.MapDirtyIn(rd, rt);
@@ -610,7 +613,7 @@ namespace MIPSComp
 
 		case 24: // seh
 			if (gpr.IsImm(rt)) {
-				gpr.SetImm(rd, (s32)(s16)(u16)gpr.GetImm(rt));
+				gpr.SetImm(rd, SignExtend16ToU32(gpr.GetImm(rt)));
 				return;
 			}
 			gpr.MapDirtyIn(rd, rt);
@@ -645,7 +648,7 @@ namespace MIPSComp
 
 	void ArmJit::Comp_Allegrex2(MIPSOpcode op)
 	{
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(ALU_BIT);
 		MIPSGPReg rt = _RT;
 		MIPSGPReg rd = _RD;
 		// Don't change $zr.
@@ -677,7 +680,7 @@ namespace MIPSComp
 
 	void ArmJit::Comp_MulDivType(MIPSOpcode op)
 	{
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(MULDIV);
 		MIPSGPReg rt = _RT;
 		MIPSGPReg rs = _RS;
 		MIPSGPReg rd = _RD;

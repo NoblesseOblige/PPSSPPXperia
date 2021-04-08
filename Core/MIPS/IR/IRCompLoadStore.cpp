@@ -38,19 +38,16 @@
 // All functions should have CONDITIONAL_DISABLE, so we can narrow things down to a file quickly.
 // Currently known non working ones should have DISABLE.
 
-// #define CONDITIONAL_DISABLE { Comp_Generic(op); return; }
-#define CONDITIONAL_DISABLE ;
+// #define CONDITIONAL_DISABLE(flag) { Comp_Generic(op); return; }
+#define CONDITIONAL_DISABLE(flag) if (opts.disableFlags & (uint32_t)JitDisable::flag) { Comp_Generic(op); return; }
 #define DISABLE { Comp_Generic(op); return; }
+#define INVALIDOP { Comp_Generic(op); return; }
 
 namespace MIPSComp {
-	void IRFrontend::Comp_ITypeMemLR(MIPSOpcode op, bool load) {
-		DISABLE;
-	}
-
 	void IRFrontend::Comp_ITypeMem(MIPSOpcode op) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(LSU);
 
-		int offset = (signed short)(op & 0xFFFF);
+		int offset = _IMM16;
 		MIPSGPReg rt = _RT;
 		MIPSGPReg rs = _RS;
 		int o = op >> 26;
@@ -61,7 +58,6 @@ namespace MIPSComp {
 
 		CheckMemoryBreakpoint(rs, offset);
 
-		int addrReg = IRTEMP_0;
 		switch (o) {
 			// Load
 		case 35:
@@ -91,49 +87,38 @@ namespace MIPSComp {
 			break;
 
 		case 34: //lwl
-		case 38: //lwr
-		case 42: //swl
-		case 46: //swr
-			DISABLE;
+			ir.Write(IROp::Load32Left, rt, rs, ir.AddConstant(offset));
 			break;
+		case 38: //lwr
+			ir.Write(IROp::Load32Right, rt, rs, ir.AddConstant(offset));
+			break;
+		case 42: //swl
+			ir.Write(IROp::Store32Left, rt, rs, ir.AddConstant(offset));
+			break;
+		case 46: //swr
+			ir.Write(IROp::Store32Right, rt, rs, ir.AddConstant(offset));
+			break;
+
 		default:
-			Comp_Generic(op);
+			INVALIDOP;
 			return;
 		}
 	}
 
 	void IRFrontend::Comp_Cache(MIPSOpcode op) {
-//		int imm = (s16)(op & 0xFFFF);
-//		int rs = _RS;
-//		int addr = R(rs) + imm;
+		CONDITIONAL_DISABLE(LSU);
+
 		int func = (op >> 16) & 0x1F;
 
-		// It appears that a cache line is 0x40 (64) bytes, loops in games
-		// issue the cache instruction at that interval.
-
-		// These codes might be PSP-specific, they don't match regular MIPS cache codes very well
+		// See Int_Cache for the definitions.
 		switch (func) {
-			// Icache
-		case 8:
-			// Invalidate the instruction cache at this address
-			DISABLE;
-			break;
-			// Dcache
-		case 24:
-			// "Create Dirty Exclusive" - for avoiding a cacheline fill before writing to it.
-			// Will cause garbage on the real machine so we just ignore it, the app will overwrite the cacheline.
-			break;
-		case 25:  // Hit Invalidate - zaps the line if present in cache. Should not writeback???? scary.
-			// No need to do anything.
-			break;
-		case 27:  // D-cube. Hit Writeback Invalidate.  Tony Hawk Underground 2
-			break;
-		case 30:  // GTA LCS, a lot. Fill (prefetch).   Tony Hawk Underground 2
-			break;
-
+		case 24: break;
+		case 25: break;
+		case 27: break;
+		case 30: break;
 		default:
+			// Fall back to the interpreter.
 			DISABLE;
-			break;
 		}
 	}
 }

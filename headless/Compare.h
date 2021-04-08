@@ -18,13 +18,14 @@
 #include <string>
 #include <vector>
 
-#include "Globals.h"
+#include "Common/CommonTypes.h"
 
 struct GPUDebugBuffer;
 
 extern bool teamCityMode;
-extern std::string teamCityName;
+extern std::string currentTestName;
 void TeamCityPrint(const char *fmt, ...);
+void GitHubActionsPrint(const char *type, const char *fmt, ...);
 
 std::string ExpectedFromFilename(const std::string &bootFilename);
 std::string ExpectedScreenshotFromFilename(const std::string &bootFilename);

@@ -1,11 +1,30 @@
-#include "DumpMemoryWindow.h"
-#include "../resource.h"
-#include <stdio.h>
-#include "Core/MemMap.h"
-#include "Windows/W32Util/ShellUtil.h"
+#include <algorithm>
+#include <cstdio>
+#include "Common/Data/Encoding/Utf8.h"
 #include "Core/Core.h"
+#include "Core/HLE/ReplaceTables.h"
+#include "Core/MemMap.h"
+#include "Core/MIPS/JitCommon/JitBlockCache.h"
+#include "Windows/Debugger/DumpMemoryWindow.h"
+#include "Windows/resource.h"
+#include "Windows/W32Util/ShellUtil.h"
 
 DumpMemoryWindow* DumpMemoryWindow::bp;
+
+void DumpMemoryWindow::HandleBrowseClick(HWND hwnd) {
+	std::wstring buffer;
+	HWND filenameWnd = GetDlgItem(hwnd, IDC_DUMP_FILENAME);
+	buffer.resize(GetWindowTextLengthW(filenameWnd) + 1);
+	GetWindowTextW(filenameWnd, &buffer[0], (int)buffer.size());
+	std::string fn = ConvertWStringToUTF8(buffer);
+
+	bool result = W32Util::BrowseForFileName(false, hwnd, L"Select filename", NULL, NULL, NULL, fn);
+	if (result) {
+		filenameChosen_ = true;
+		buffer = ConvertUTF8ToWString(fn);
+		SetWindowTextW(filenameWnd, buffer.c_str());
+	}
+}
 	
 INT_PTR CALLBACK DumpMemoryWindow::dlgFunc(HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -53,41 +72,54 @@ INT_PTR CALLBACK DumpMemoryWindow::dlgFunc(HWND hwnd, UINT iMsg, WPARAM wParam, 
 			switch (HIWORD(wParam))
 			{
 			case BN_CLICKED:
-				char str[MAX_PATH];
-				GetWindowTextA(GetDlgItem(hwnd,IDC_DUMP_FILENAME),str,MAX_PATH);
-				std::string fn = str;
-
-				bool result = W32Util::BrowseForFileName(false, hwnd, L"Select filename", NULL,NULL,NULL,fn);
-				if (result)
-				{
-					bp->filenameChosen = true;
-					SetWindowTextA(GetDlgItem(hwnd,IDC_DUMP_FILENAME),fn.c_str());
-				}
+				bp->HandleBrowseClick(hwnd);
 				break;
 			}
 			break;
 		case IDOK:
-			if (bp->fetchDialogData(hwnd))
-			{
+			if (bp->fetchDialogData(hwnd)) {
+				bool priorDumpWasStepping = Core_IsStepping();
+				if (!priorDumpWasStepping && PSP_IsInited()) {
+					// If emulator isn't paused force paused state, but wait before locking.
+					Core_EnableStepping(true);
+					Core_WaitInactive();
+				}
+
 				auto memLock = Memory::Lock();
 				if (!PSP_IsInited())
 					break;
 
-				FILE* output = fopen(bp->fileName,"wb");
-				if (output == NULL) {
+				FILE *output = _wfopen(bp->fileName_.c_str(), L"wb");
+				if (output == nullptr) {
 					char errorMessage[2048];
-					snprintf(errorMessage, sizeof(errorMessage), "Could not open file \"%s\".",bp->fileName);
-					MessageBoxA(hwnd,errorMessage,"Error",MB_OK);
+					snprintf(errorMessage, sizeof(errorMessage), "Could not open file \"%S\".", bp->fileName_.c_str());
+					MessageBoxA(hwnd, errorMessage, "Error", MB_OK);
 					break;
 				}
-				
-				bool priorDumpWasStepping = Core_IsStepping();
-				if (!priorDumpWasStepping) Core_EnableStepping(true); // If emulator isn't paused force paused state
-				fwrite(Memory::GetPointer(bp->start), 1, bp->size, output);
+
+				bool includeReplacements = SendMessage(GetDlgItem(hwnd, IDC_DUMP_INCLUDEHACKS), BM_GETCHECK, 0, 0) != 0;
+				if (includeReplacements) {
+					fwrite(Memory::GetPointer(bp->start), 1, bp->size, output);
+				} else {
+					auto savedReplacements = SaveAndClearReplacements();
+					if (MIPSComp::jit) {
+						auto savedBlocks = MIPSComp::jit->SaveAndClearEmuHackOps();
+						fwrite(Memory::GetPointer(bp->start), 1, bp->size, output);
+						MIPSComp::jit->RestoreSavedEmuHackOps(savedBlocks);
+					} else {
+						fwrite(Memory::GetPointer(bp->start), 1, bp->size, output);
+					}
+					RestoreSavedReplacements(savedReplacements);
+				}
+
 				fclose(output);
-				if (!priorDumpWasStepping) Core_EnableStepping(false); // If emulator wasn't paused before memory dump resume emulation automatically.
-				MessageBoxA(hwnd,"Done.","Information",MB_OK);
-				EndDialog(hwnd,true);
+				if (!priorDumpWasStepping) {
+					// If emulator wasn't paused before memory dump resume emulation automatically.
+					Core_EnableStepping(false);
+				}
+
+				MessageBoxA(hwnd, "Done.", "Information", MB_OK);
+				EndDialog(hwnd, true);
 			}
 			break;
 		case IDCANCEL:
@@ -140,8 +172,10 @@ bool DumpMemoryWindow::fetchDialogData(HWND hwnd)
 	}
 	
 	// get filename
-	GetWindowTextA(GetDlgItem(hwnd,IDC_DUMP_FILENAME),fileName,MAX_PATH);
-	if (strlen(fileName) == 0) return false;
+	fileName_.resize(GetWindowTextLengthW(GetDlgItem(hwnd, IDC_DUMP_FILENAME)) + 1);
+	GetWindowTextW(GetDlgItem(hwnd, IDC_DUMP_FILENAME), &fileName_[0], (int)fileName_.size());
+	if (fileName_.size() == 0)
+		return false;
 
 	// now check if data makes sense...
 	bool invalidSize = false;
@@ -190,7 +224,7 @@ void DumpMemoryWindow::changeMode(HWND hwnd, Mode newMode)
 		EnableWindow(GetDlgItem(hwnd,IDC_DUMP_STARTADDRESS),TRUE);
 		EnableWindow(GetDlgItem(hwnd,IDC_DUMP_SIZE),TRUE);
 
-		if (filenameChosen == false)
+		if (filenameChosen_ == false)
 			SetWindowTextA(GetDlgItem(hwnd,IDC_DUMP_FILENAME),"Custom.dump");
 	} else {
 		u32 start, size;
@@ -223,7 +257,7 @@ void DumpMemoryWindow::changeMode(HWND hwnd, Mode newMode)
 		SetWindowTextA(GetDlgItem(hwnd,IDC_DUMP_SIZE),buffer);
 		EnableWindow(GetDlgItem(hwnd,IDC_DUMP_SIZE),FALSE);
 		
-		if (filenameChosen == false)
+		if (filenameChosen_ == false)
 			SetWindowTextA(GetDlgItem(hwnd,IDC_DUMP_FILENAME),defaultFileName);
 	}
 }

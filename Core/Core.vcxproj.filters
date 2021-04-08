@@ -70,6 +70,27 @@
     <Filter Include="MIPS\IR">
       <UniqueIdentifier>{119ac973-e457-4025-9e1e-4fb34022ae23}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Debugger\WebSocket">
+      <UniqueIdentifier>{c21d9bb5-614d-451b-8c0b-3078b29122d8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Ext\gason">
+      <UniqueIdentifier>{db010645-6b26-41a7-8d44-c53cb0533d7d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Ext\city">
+      <UniqueIdentifier>{cf1a59fe-8509-48f0-84d0-27c71cb10dc3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Ext\sha1">
+      <UniqueIdentifier>{d8c48d88-2e34-4a98-aa88-4277a3b8afea}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Ext\jpge">
+      <UniqueIdentifier>{6c6e0188-fabf-4203-aaa2-896c42be2c20}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Ext\libzip">
+      <UniqueIdentifier>{0201ff27-4fa8-4cf3-bbb9-accfdc0c7046}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="MIPS\fake">
+      <UniqueIdentifier>{678fa299-0ff7-4983-982d-2da47b52e238}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ELF\ElfReader.cpp">
@@ -331,9 +352,6 @@
       <Filter>HW</Filter>
     </ClCompile>
     <ClCompile Include="Util\PPGeDraw.cpp">
-      <Filter>Util</Filter>
-    </ClCompile>
-    <ClCompile Include="Util\ppge_atlas.cpp">
       <Filter>Util</Filter>
     </ClCompile>
     <ClCompile Include="HLE\sceFont.cpp">
@@ -680,6 +698,288 @@
     <ClCompile Include="HLE\KUBridge.cpp">
       <Filter>HLE\Libraries</Filter>
     </ClCompile>
+    <ClCompile Include="FileSystems\BlobFileSystem.cpp">
+      <Filter>FileSystems</Filter>
+    </ClCompile>
+    <ClCompile Include="HLE\sceUsbCam.cpp">
+      <Filter>HLE\Libraries</Filter>
+    </ClCompile>
+    <ClCompile Include="Replay.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="WebServer.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket.cpp">
+      <Filter>Debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\LogBroadcaster.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\SteppingBroadcaster.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\GameBroadcaster.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\CPUCoreSubscriber.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\WebSocketUtils.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\GameSubscriber.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\MemorySubscriber.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\DisasmSubscriber.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\SteppingSubscriber.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\BreakpointSubscriber.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\HLESubscriber.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\GPUBufferSubscriber.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="HLE\sceUsbAcc.cpp">
+      <Filter>HLE\Libraries</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\GPURecordSubscriber.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="HLE\sceUsbMic.cpp">
+      <Filter>HLE\Libraries</Filter>
+    </ClCompile>
+    <ClCompile Include="HW\Camera.cpp">
+      <Filter>HW</Filter>
+    </ClCompile>
+    <ClCompile Include="HLE\sceKernelHeap.cpp">
+      <Filter>HLE\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="MemFault.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Util\PortManager.cpp">
+      <Filter>Util</Filter>
+    </ClCompile>
+    <ClCompile Include="Instance.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="HW\BufferQueue.cpp">
+      <Filter>HW</Filter>
+    </ClCompile>
+    <ClCompile Include="HLE\Plugins.cpp">
+      <Filter>HLE</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\snappy\snappy-stubs-internal.cpp">
+      <Filter>Ext\Snappy</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\snappy\snappy-sinksource.cpp">
+      <Filter>Ext\Snappy</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\gason\gason.cpp">
+      <Filter>Ext\gason</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\cityhash\city.cpp">
+      <Filter>Ext\city</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\sha1\sha1.cpp">
+      <Filter>Ext\sha1</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\jpge\jpgd.cpp">
+      <Filter>Ext\jpge</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\jpge\jpge.cpp">
+      <Filter>Ext\jpge</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\mkstemp.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_add.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_add_dir.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_close.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_delete.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_dirent.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_entry_free.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_entry_new.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_err_str.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_error.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_error_clear.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_error_get.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_error_get_sys_type.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_error_strerror.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_error_to_str.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_fclose.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_file_error_clear.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_file_error_get.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_file_get_offset.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_file_strerror.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_filerange_crc.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_fopen.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_fopen_index.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_fread.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_free.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_get_archive_comment.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_get_archive_flag.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_get_file_comment.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_get_name.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_get_num_files.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_memdup.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_name_locate.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_new.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_open.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_rename.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_replace.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_set_archive_comment.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_set_archive_flag.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_set_file_comment.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_set_name.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_source_buffer.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_source_file.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_source_filep.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_source_free.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_source_function.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_source_zip.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_stat.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_stat_index.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_stat_init.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_strerror.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_unchange.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_unchange_all.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_unchange_archive.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libzip\zip_unchange_data.c">
+      <Filter>Ext\libzip</Filter>
+    </ClCompile>
+    <ClCompile Include="KeyMap.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="ThreadPools.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\InputSubscriber.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\InputBroadcaster.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="MIPS\fake\FakeJit.cpp">
+      <Filter>MIPS\fake</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\MemBlockInfo.cpp">
+      <Filter>Debugger</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ELF\ElfReader.h">
@@ -935,9 +1235,6 @@
       <Filter>HW</Filter>
     </ClInclude>
     <ClInclude Include="Util\PPGeDraw.h">
-      <Filter>Util</Filter>
-    </ClInclude>
-    <ClInclude Include="Util\ppge_atlas.h">
       <Filter>Util</Filter>
     </ClInclude>
     <ClInclude Include="HLE\sceFont.h">
@@ -1250,10 +1547,159 @@
     <ClInclude Include="HLE\KUBridge.h">
       <Filter>HLE\Libraries</Filter>
     </ClInclude>
+    <ClInclude Include="FileSystems\BlobFileSystem.h">
+      <Filter>FileSystems</Filter>
+    </ClInclude>
+    <ClInclude Include="HLE\sceUsbCam.h">
+      <Filter>HLE\Libraries</Filter>
+    </ClInclude>
+    <ClInclude Include="Replay.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="WebServer.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket.h">
+      <Filter>Debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\LogBroadcaster.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\SteppingBroadcaster.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\GameBroadcaster.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\CPUCoreSubscriber.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\WebSocketUtils.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\GameSubscriber.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\MemorySubscriber.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\DisasmSubscriber.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\SteppingSubscriber.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\BreakpointSubscriber.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="HLE\KernelThreadDebugInterface.h">
+      <Filter>HLE\Kernel</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\HLESubscriber.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\GPUBufferSubscriber.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="ConfigValues.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="HLE\sceUsbAcc.h">
+      <Filter>HLE\Libraries</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\GPURecordSubscriber.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="HLE\sceUsbMic.h">
+      <Filter>HLE\Libraries</Filter>
+    </ClInclude>
+    <ClInclude Include="HW\Camera.h">
+      <Filter>HW</Filter>
+    </ClInclude>
+    <ClInclude Include="HLE\sceKernelHeap.h">
+      <Filter>HLE\Kernel</Filter>
+    </ClInclude>
+    <ClInclude Include="MemFault.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="Util\PortManager.h">
+      <Filter>Util</Filter>
+    </ClInclude>
+    <ClInclude Include="Instance.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="HLE\Plugins.h">
+      <Filter>HLE</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\gason\gason.h">
+      <Filter>Ext\gason</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\cityhash\city.h">
+      <Filter>Ext\city</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\cityhash\citycrc.h">
+      <Filter>Ext\city</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\sha1\sha1.h">
+      <Filter>Ext\sha1</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\jpge\jpgd.h">
+      <Filter>Ext\jpge</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\jpge\jpge.h">
+      <Filter>Ext\jpge</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libzip\config.h">
+      <Filter>Ext\libzip</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libzip\zip.h">
+      <Filter>Ext\libzip</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libzip\zipint.h">
+      <Filter>Ext\libzip</Filter>
+    </ClInclude>
+    <ClInclude Include="KeyMap.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="ThreadPools.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\InputSubscriber.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\InputBroadcaster.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="MIPS\fake\FakeJit.h">
+      <Filter>MIPS\fake</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\MemBlockInfo.h">
+      <Filter>Debugger</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="CMakeLists.txt" />
     <None Include="..\LICENSE.TXT" />
     <None Include="..\android\jni\Android.mk" />
+    <None Include="..\ext\gason\LICENSE">
+      <Filter>Ext\gason</Filter>
+    </None>
+    <None Include="..\ext\cityhash\COPYING">
+      <Filter>Ext\city</Filter>
+    </None>
+    <None Include="..\ext\cityhash\README">
+      <Filter>Ext\city</Filter>
+    </None>
+    <None Include="..\ext\libzip\Android.mk">
+      <Filter>Ext\libzip</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="..\ext\sha1\CMakeLists.txt">
+      <Filter>Ext\sha1</Filter>
+    </Text>
+    <Text Include="..\ext\libzip\CMakeLists.txt">
+      <Filter>Ext\libzip</Filter>
+    </Text>
   </ItemGroup>
 </Project>

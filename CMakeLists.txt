@@ -1,57 +1,75 @@
 # vim:noexpandtab:
 cmake_minimum_required(VERSION 3.6)
 project(PPSSPP)
+enable_testing()
 
 #This is supposed to work but doesn't!
-#set(CMAKE_CXX_STANDARD 11)
-#set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(NOT ANDROID)
+	set(CMAKE_CXX_STANDARD 11)
+	set(CMAKE_CXX_STANDARD_REQUIRED ON)
+endif()
 
 enable_language(ASM)
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
 
-add_definitions(-DPPSSPP)
 add_definitions(-D__STDC_CONSTANT_MACROS)
 
-# Of the CMake platforms, we only support Vulkan on Android and Windows.
-if(ANDROID OR WIN32)
-  set(VULKAN ON)
-else()
-  add_definitions(-DNO_VULKAN)
+if(${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang")
+	set(CLANG ON)
+	message("Clang enabled")
+endif()
+
+if(FORCED_CPU)
+	message("Detected CPU (${CMAKE_SYSTEM_PROCESSOR}) overridden as: ${FORCED_CPU}")
+	set(CMAKE_SYSTEM_PROCESSOR ${FORCED_CPU})
 endif()
 
 # Detect CPU from CMAKE configuration. Toolchains should set this up
 if(CMAKE_SYSTEM_PROCESSOR)
-	if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^arm")
-		set(ARM ON)
+	if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^aarch64")
+		set(ARM64 ON)
+	elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^arm64")
+		# M1 Mac
+		set(ARM64 ON)
+	elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^arm")
+		message("ARM_DEVICE is a go")
+		set(ARM_DEVICE ON)
+		if(UNIX AND NOT APPLE)
+			execute_process(COMMAND cat /proc/cpuinfo OUTPUT_VARIABLE OUTSTR)
+			string(FIND "${OUTSTR}" "ODROID-XU" pos)
+			if(NOT (pos LESS 0))
+				add_compile_options(-mfloat-abi=hard -marm -mtune=cortex-a15.cortex-a7 -mcpu=cortex-a15 -fomit-frame-pointer)
+				set(ARM_NO_VULKAN ON)
+			endif()
+		endif()
 		if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^armv7")
-			set(ARMV7 ON)
+			set(ARMV7_DEVICE ON)
+			add_compile_options(-mfpu=neon)
 			# Horrifying workaround for bug in android cmake stuff for asm files
-			if (ANDROID)
+			if(ANDROID)
 				set(CMAKE_ASM_FLAGS "${CMAKE_ASM_FLAGS} -target armv7a-none-linux-android")
 			endif()
 		endif()
-	elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^aarch64")
-	  set(ARM64 ON)
-	  add_definitions(-DARM64)
 	elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^amd64" OR ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^x86_64" OR ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^AMD64")
-		set(X86 ON)
-    set(X86_64 ON)
+		set(X86_DEVICE ON)
+		set(X86_64_DEVICE ON)
 	elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^x86" OR ${CMAKE_SYSTEM_PROCESSOR} MATCHES "i.86")
-		set(X86 ON)
+		set(X86_DEVICE ON)
 	elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
-		set(MIPS ON)
+		set(MIPS_DEVICE ON)
 	else()
-    message("Unknown CMAKE_SYSTEM_PROCESSOR: ${CMAKE_SYSTEM_PROCESSOR}")
+		message("Unknown CMAKE_SYSTEM_PROCESSOR: ${CMAKE_SYSTEM_PROCESSOR}")
 	endif()
 endif()
 
-include(ccache)
+# the libraries in the ffmpeg/ directory are not compatible with mingw
+if(MINGW AND NOT DEFINED USE_SYSTEM_FFMPEG)
+	set(USE_SYSTEM_FFMPEG ON)
+endif()
 
-# Remove soon?
-set(USE_FFMPEG ON)
-
-if(ARM OR SIMULATOR)
-	set(USING_EGL ON)
+if(NOT ANDROID AND NOT IOS)
+	if(ARM_DEVICE OR SIMULATOR)
+		set(USING_EGL ON)
+	endif()
 endif()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
@@ -61,78 +79,147 @@ endif()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 	set(MACOSX ON)
+	set(USING_EGL OFF)
 endif()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Android")
-  set(ANDROID ON)
+	set(ANDROID ON)
 endif()
 
-if(NOT DEFINED HEADLESS)
-	set(HEADLESS OFF)
+# We only support Vulkan on Unix, macOS (by MoltenVK), Android and Windows.
+if(ANDROID OR WIN32 OR (UNIX AND NOT ARM_NO_VULKAN))
+	set(VULKAN ON)
 endif()
 
-# Doesn't link on some platforms
-#if(NOT DEFINED UNITTEST)
-#	set(UNITTEST OFF)
-#endif()
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
+if(NOT ((ARM64 AND MACOSX) OR IOS))
+	list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/sdl)
+endif()
+
+include(ccache)
+include(GNUInstallDirs)
+
+add_definitions(-DASSETS_DIR="${CMAKE_INSTALL_FULL_DATADIR}/ppsspp/assets/")
+
+if(GOLD)
+	add_definitions(-DGOLD)
+	message("Gold Build")
+else()
+	message("Normal Build")
+endif()
 
 # User-editable options (go into CMakeCache.txt)
 # :: Processors
-option(ARMV7 "Set to ON if targeting an ARMv7 processor" ${ARMV7})
-option(ARM "Set to ON if targeting an ARM processor" ${ARM})
-option(MIPS "Set to ON if targeting a MIPS processor" ${MIPS})
-option(X86 "Set to ON if targeting an X86 processor" ${X86})
-option(X86_64 "Set to ON if targeting an X86_64 processor" ${X86_64})
+option(ARMV7 "Set to ON if targeting an ARMv7 processor" ${ARMV7_DEVICE})
+option(ARM "Set to ON if targeting an ARM processor" ${ARM_DEVICE})
+option(MIPS "Set to ON if targeting a MIPS processor" ${MIPS_DEVICE})
+option(X86 "Set to ON if targeting an X86 processor" ${X86_DEVICE})
+option(X86_64 "Set to ON if targeting an X86_64 processor" ${X86_64_DEVICE})
 # :: Environments
 option(USING_EGL "Set to ON if target environment uses EGL" ${USING_EGL})
 option(USING_FBDEV "Set to ON if target environment uses fbdev (eg. Pandora)" ${USING_FBDEV})
 option(USING_GLES2 "Set to ON if target device uses OpenGL ES 2.0" ${USING_GLES2})
-option(RASPBIAN "Set to ON to workaround threading issues when building for ARMV7 on Raspbian" ${RASPBIAN})
+option(USING_X11_VULKAN "Set to OFF if target environment doesn't use X11 for Vulkan" ON)
+option(USE_WAYLAND_WSI "Enable or disable Wayland WSI support for Vulkan" ${USE_WAYLAND_WSI})
 # :: Frontends
 option(USING_QT_UI "Set to ON if you wish to use the Qt frontend wrapper" ${USING_QT_UI})
 option(MOBILE_DEVICE "Set to ON when targeting a mobile device" ${MOBILE_DEVICE})
 option(HEADLESS "Set to OFF to not generate the PPSSPPHeadless target" ${HEADLESS})
 option(UNITTEST "Set to ON to generate the unittest target" ${UNITTEST})
 option(SIMULATOR "Set to ON when targeting an x86 simulator of an ARM platform" ${SIMULATOR})
+option(LIBRETRO "Set to ON to generate the libretro target" OFF)
 # :: Options
-option(USE_FFMPEG "Build with FFMPEG support" ${USE_FFMPEG})
+option(USE_FFMPEG "Build with FFMPEG support" ON)
+option(USE_DISCORD "Build with Discord support" ON)
+option(USE_MINIUPNPC "Build with miniUPnPc support" ON)
+option(USE_SYSTEM_SNAPPY "Dynamically link against system snappy" ${USE_SYSTEM_SNAPPY})
 option(USE_SYSTEM_FFMPEG "Dynamically link against system FFMPEG" ${USE_SYSTEM_FFMPEG})
+option(USE_SYSTEM_LIBZIP "Dynamically link against system libzip" ${USE_SYSTEM_LIBZIP})
+option(USE_ASAN "Use address sanitizer" OFF)
+option(USE_UBSAN "Use undefined behaviour sanitizer" OFF)
+
+if(UNIX AND NOT (APPLE OR ANDROID) AND VULKAN)
+	if(USING_X11_VULKAN)
+		message("Using X11 for Vulkan")
+		add_definitions(-DVK_USE_PLATFORM_XLIB_KHR)
+	else()
+		message("NOT using X11 for Vulkan")
+	endif()
+	# add_definitions(-DVK_USE_PLATFORM_XCB_KHR)
+	if(USE_WAYLAND_WSI)
+		find_package(Wayland)
+		if(NOT WAYLAND_FOUND)
+			message(STATUS "Could not find Wayland libraries, disabling Wayland WSI support for Vulkan.")
+		else()
+			include_directories(${WAYLAND_INCLUDE_DIR})
+			add_definitions(-DVK_USE_PLATFORM_WAYLAND_KHR)
+		endif()
+	endif()
+endif()
+
+if(LIBRETRO)
+	add_definitions(-D__LIBRETRO__)
+	add_definitions(-DGLEW_NO_GLU)
+	if(NOT MSVC)
+		add_compile_options(-fPIC)
+	endif()
+endif()
 
 if(ANDROID)
-	set(CoreLibName ppsspp_jni)
-	set(CoreLinkType SHARED)
 	set(MOBILE_DEVICE ON)
 	set(USING_GLES2 ON)
+endif()
+
+if(ANDROID AND NOT LIBRETRO)
+	set(CoreLibName ppsspp_jni)
+	set(CoreLinkType SHARED)
 else()
 	set(CoreLibName Core)
 	set(CoreLinkType STATIC)
 endif()
 
-include_directories(ext/native)
+# Work around for some misfeature of the current glslang build system 
+include_directories(ext/glslang)
+
+# Not sure if this is the best way - what about system glew?
+# Anyway, glew will be going away anyway.
+include_directories(ext/glew)
 
 if(NOT OPENGL_LIBRARIES AND USING_GLES2)
-	set(OPENGL_LIBRARIES GLESv2)
+	set(OPENGL_LIBRARIES GLESv2 EGL)
 endif()
 
 if(NOT OPENGL_LIBRARIES)
+	if(POLICY CMP0072)
+		cmake_policy(SET CMP0072 NEW)
+	endif()
 	find_package(OpenGL REQUIRED)
 endif()
 
-find_package(SDL2)
+if(USING_EGL)
+	if(NOT EGL_LIBRARIES)
+		set(EGL_LIBRARIES EGL)
+	endif()
+	set(OPENGL_LIBRARIES ${OPENGL_LIBRARIES} ${EGL_LIBRARIES})
+endif()
+
+if(NOT LIBRETRO AND NOT IOS)
+	find_package(SDL2)
+endif()
 include(FindThreads)
 
 if(APPLE)
 	find_library(COCOA_LIBRARY Cocoa)
+	find_library(QUARTZ_CORE_LIBRARY QuartzCore)
 endif()
 
-# Needed for Globals.h
 include_directories("${CMAKE_SOURCE_DIR}")
 
 if(USING_EGL)
 	add_definitions(-DUSING_EGL)
 endif()
 if(USING_FBDEV)
-	add_definitions(-DUSING_FBDEV)
+	add_definitions(-DUSING_FBDEV -DEGL_NO_X11)
 endif()
 if(USING_GLES2)
 	add_definitions(-DUSING_GLES2)
@@ -141,7 +228,7 @@ if(MOBILE_DEVICE)
 	add_definitions(-DMOBILE_DEVICE)
 endif()
 
-if (NOT CMAKE_BUILD_TYPE)
+if(NOT CMAKE_BUILD_TYPE)
 	message(STATUS "No build type selected, default to Release")
 	set(CMAKE_BUILD_TYPE "Release")
 endif()
@@ -168,68 +255,109 @@ if(X86_64)
 	message("Generating for x86_64, ${CMAKE_BUILD_TYPE}")
 endif()
 if(ARM64)
-  message("Generating for ARMv8, ${CMAKE_BUILD_TYPE}")
+	message("Generating for ARMv8, ${CMAKE_BUILD_TYPE}")
 endif()
 
+# It looks like the flags for the selected build type are written to the cache after each run, which causes some of the operations
+# below to keep expanding them with the same flags over and over on every run, leading to a rebuild of the majority of the files.
+# To work around this, remember the initial state of the variables from the first run and reset the variables to that.
+# TODO: Setting the attributes per target would probably be a better solution.
+foreach (LANGUAGE C CXX)
+	foreach (BUILD_TYPE DEBUG MINSIZEREL RELEASE RELWITHDEBINFO)
+		set(_CMAKE_${LANGUAGE}_FLAGS_${BUILD_TYPE}_INITIAL ${CMAKE_${LANGUAGE}_FLAGS_${BUILD_TYPE}} CACHE STRING "")
+		set(CMAKE_${LANGUAGE}_FLAGS_${BUILD_TYPE} ${_CMAKE_${LANGUAGE}_FLAGS_${BUILD_TYPE}_INITIAL})
+	endforeach()
+endforeach()
+
 if(NOT MSVC)
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-  if (NOT ANDROID)
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -D_DEBUG")
-    set(CMAKE_CXX_FLAGS_MINSIZEREL "${CMAKE_CXX_FLAGS_MINSIZEREL} -Os -D_NDEBUG")
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -D_NDEBUG")
-    set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O2 -g -D_NDEBUG")
-    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -g -D_DEBUG")
-    set(CMAKE_C_FLAGS_MINSIZEREL "${CMAKE_C_FLAGS_MINSIZEREL} -Os -D_NDEBUG")
-    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -D_NDEBUG")
-    set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O2 -g -D_NDEBUG")
-  endif()
-	#TODO: Remove this and include the file properly everywhere it makes sense
-	# First step is too use the macros everywhere
-	# Second step is to remove the compatibility defines
-	# Third step is to include the file
-	# Fourth step is to remove that line!
-	add_compile_options(-include ${CMAKE_CURRENT_SOURCE_DIR}/ppsspp_config.h)
+	if(ANDROID)
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11")
+	endif()
+	if(CLANG)
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-switch -Wno-uninitialized")
+	endif()
+
+	if(USE_ASAN)
+		message("Address sanitizer enabled (DEBUG only)")
+		set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
+		set(CMAKE_LINKER_FLAGS_DEBUG "${CMAKE_LINKER_FLAGS_DEBUG} -fsanitize=address")
+		add_definitions(-DUSE_ASAN)
+	endif()
+	if(USE_UBSAN)
+		message("Undefined behaviour sanitizer enabled (DEBUG only)")
+		set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=undefined")
+		set(CMAKE_LINKER_FLAGS_DEBUG "${CMAKE_LINKER_FLAGS_DEBUG} -fsanitize=undefined")
+
+		# UBSAN is a collection of sanitizers, including vtpr, which reqiuires RTTI.
+		# ext/glslang disables RTTI by default using the `ENABLE_RTTI` option.
+		# If RTTI is disabled, we must also disable the vtpr sanitizer.
+		if(NOT ENABLE_RTTI)
+			set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fno-sanitize=vptr")
+			set(CMAKE_LINKER_FLAGS_DEBUG "${CMAKE_LINKER_FLAGS_DEBUG} -fno-sanitize=vptr")
+		endif()
+	endif()
+
+	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -D_DEBUG")
+	set(CMAKE_CXX_FLAGS_MINSIZEREL "${CMAKE_CXX_FLAGS_MINSIZEREL} -Os -D_NDEBUG")
+	set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O2 -D_NDEBUG")
+	set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O2 -g -D_NDEBUG")
+	set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -g -D_DEBUG")
+	set(CMAKE_C_FLAGS_MINSIZEREL "${CMAKE_C_FLAGS_MINSIZEREL} -Os -D_NDEBUG")
+	set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O2 -D_NDEBUG")
+	set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O2 -g -D_NDEBUG")
 
 	# Disable some warnings
 	add_definitions(-Wno-multichar)
+	add_definitions(-Wno-deprecated-register)
+	add_definitions(-Wno-tautological-pointer-compare)
 
 	# Don't compile with strict aliasing, we're not 100% aliasing-safe
-	add_definitions(-fno-strict-aliasing)
-	if (CMAKE_C_COMPILER_ID STREQUAL "Intel")
+	add_compile_options(-fno-strict-aliasing)
+	if(${CMAKE_C_COMPILER_ID} STREQUAL "Intel")
 		set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -parallel -fopenmp")
 	endif()
 
-	if((X86 OR X86_64) AND NOT MIPS)   # What's with the AND NOT MIPS?
+	if(X86 OR X86_64)
 		# enable sse2 code generation
 		add_definitions(-msse2)
 	endif()
 
 	if(IOS)
 	elseif(APPLE AND NOT CMAKE_CROSSCOMPILING)
-        # We want C++11, so target 10.7+
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mmacosx-version-min=10.7")
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mmacosx-version-min=10.7 -stdlib=libc++ -U__STRICT_ANSI__")
+		set(MACOSX_VERSION_MIN "10.8")
+		set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mmacosx-version-min=${MACOSX_VERSION_MIN}")
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mmacosx-version-min=${MACOSX_VERSION_MIN} -stdlib=libc++ -U__STRICT_ANSI__")
 		set(CMAKE_XCODE_ATTRIBUTE_CLANG_CXX_LIBRARY "libc++")
-	else()
-		if (NOT CMAKE_C_COMPILER_ID STREQUAL "Intel" AND NOT CMAKE_C_COMPILER_ID STREQUAL "Clang")
+	elseif(NOT ANDROID)
+		# TODO: See if we can get rid of no-psabi
+		if(NOT ${CMAKE_C_COMPILER_ID} STREQUAL "Intel" AND NOT ${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang")
 			add_definitions(-Wno-psabi)
 		endif()
 		add_definitions(-D_XOPEN_SOURCE=700)
 		add_definitions(-D_XOPEN_SOURCE_EXTENDED -D__BSD_VISIBLE=1)
 		add_definitions(-D_LARGEFILE64_SOURCE=1 -D_FILE_OFFSET_BITS=64)
+	elseif(ANDROID)
+		add_definitions(-fsigned-char)
 	endif()
 else()
 	# Disable warnings about MS-specific _s variants of libc functions
 	add_definitions(-D_CRT_SECURE_NO_WARNINGS)
-	add_definitions(-D_UNICODE -DUNICODE)
-	add_definitions(-DUSING_WIN_UI)
-	add_definitions(-MP)
+	if (NOT CLANG)
+		add_compile_options(-MP)
+	endif()
 	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_DEBUG")
 	set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -D_NDEBUG")
 endif()
 
+if(WIN32)
+	add_definitions(-D_UNICODE -DUNICODE)
+	add_definitions(-DUSING_WIN_UI)
+endif()
+
+if(NOT ANDROID)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+endif()
 
 # This sets up the MSVC project dirs according to the physical project dirs
 macro(setup_target_project TargetName ProjectDir)
@@ -246,8 +374,13 @@ macro(setup_target_project TargetName ProjectDir)
 	endforeach()
 endmacro()
 
-# Commented-out files are files that don't compile
-# and were disabled in the original MSVC project anyway
+add_subdirectory(ext)
+
+if(WIN32)
+	include_directories(dx9sdk/Include)
+	include_directories(dx9sdk/Include/DX11)
+endif()
+
 
 set(CommonX86
 	Common/ABI.cpp
@@ -259,14 +392,16 @@ set(CommonX86
 	Common/x64Analyzer.cpp
 	Common/x64Analyzer.h
 	Common/x64Emitter.cpp
-	Common/x64Emitter.h)
+	Common/x64Emitter.h
+)
 source_group(x86 FILES ${CommonX86})
 
 set(CommonARM
 	Common/ArmCPUDetect.cpp
 	Common/ArmEmitter.h
 	Common/ArmEmitter.cpp
-	Common/ColorConvNEON.cpp)
+	Common/ColorConvNEON.cpp
+)
 source_group(ARM FILES ${CommonARM})
 
 set(CommonARM64
@@ -274,41 +409,29 @@ set(CommonARM64
 	Common/Arm64Emitter.cpp
 	Common/ArmEmitter.h
 	Common/ArmEmitter.cpp
-	Core/Util/DisArm64.cpp)
+	Core/Util/DisArm64.cpp
+)
 source_group(ARM64 FILES ${CommonARM64})
 
 set(CommonMIPS
 	Common/MipsCPUDetect.cpp
 	Common/MipsEmitter.cpp
-	Common/MipsEmitter.h)
+	Common/MipsEmitter.h
+)
 source_group(MIPS FILES ${CommonMIPS})
 
-if(NOT (X86 OR ARM OR MIPS))
-	set(CommonFake
-		Common/FakeCPUDetect.cpp
-		Common/FakeEmitter.h)
-    source_group(Fake FILES ${CommonFake})
-endif()
-
-set(CommonWindows
-	Common/stdafx.cpp
-	Common/stdafx.h)
-source_group(Windows FILES ${CommonWindows})
-
-if(VULKAN)
-	set(CommonVulkan ${CommonExtra}
-		Common/Vulkan/SPIRVDisasm.cpp
-		Common/Vulkan/SPIRVDisasm.h
-		Common/Vulkan/VulkanContext.cpp
-		Common/Vulkan/VulkanContext.h
-		Common/Vulkan/VulkanImage.cpp
-		Common/Vulkan/VulkanImage.h
-		Common/Vulkan/VulkanLoader.cpp
-		Common/Vulkan/VulkanLoader.h
-		Common/Vulkan/VulkanMemory.cpp
-		Common/Vulkan/VulkanMemory.h)
-else()
-	set(CommonVulkan)
+if(WIN32)
+	set(CommonD3D
+		Common/GPU/D3D9/D3D9ShaderCompiler.cpp
+		Common/GPU/D3D9/D3D9ShaderCompiler.h
+		Common/GPU/D3D9/D3D9StateCache.cpp
+		Common/GPU/D3D9/D3D9StateCache.h
+		Common/GPU/D3D9/thin3d_d3d9.cpp
+		Common/GPU/D3D9/D3DCompilerLoader.cpp
+		Common/GPU/D3D11/thin3d_d3d11.cpp
+		Common/GPU/D3D11/D3D11Loader.cpp
+		Common/GPU/D3D11/D3D11Loader.h
+	)
 endif()
 
 add_library(Common STATIC
@@ -316,122 +439,293 @@ add_library(Common STATIC
 	${CommonARM}
 	${CommonARM64}
 	${CommonMIPS}
-	${CommonFake}
-	${CommonWindows}
-	${CommonVulkan}
-	Common/ColorConv.cpp
-	Common/ColorConv.h
-	Common/ChunkFile.cpp
-	Common/ChunkFile.h
-	Common/ConsoleListener.cpp
-	Common/ConsoleListener.h
+	${CommonD3D}
+	Common/Serialize/Serializer.cpp
+	Common/Serialize/Serializer.h
+	Common/Serialize/SerializeDeque.h
+	Common/Serialize/SerializeFuncs.h
+	Common/Serialize/SerializeList.h
+	Common/Serialize/SerializeMap.h
+	Common/Serialize/SerializeSet.h
 	Common/Crypto/md5.cpp
 	Common/Crypto/md5.h
 	Common/Crypto/sha1.cpp
 	Common/Crypto/sha1.h
 	Common/Crypto/sha256.cpp
 	Common/Crypto/sha256.h
-	Common/FileUtil.cpp
-	Common/FileUtil.h
-	Common/KeyMap.cpp
-	Common/KeyMap.h
+	Common/Data/Collections/ConstMap.h
+	Common/Data/Collections/FixedSizeQueue.h
+	Common/Data/Collections/Hashmaps.h
+	Common/Data/Collections/TinySet.h
+	Common/Data/Collections/ThreadSafeList.h
+	Common/Data/Color/RGBAUtil.cpp
+	Common/Data/Color/RGBAUtil.h
+	Common/Data/Convert/SmallDataConvert.cpp
+	Common/Data/Convert/SmallDataConvert.h
+	Common/Data/Encoding/Base64.cpp
+	Common/Data/Encoding/Base64.h
+	Common/Data/Encoding/Compression.cpp
+	Common/Data/Encoding/Compression.h
+	Common/Data/Encoding/Shiftjis.h
+	Common/Data/Encoding/Utf8.cpp
+	Common/Data/Encoding/Utf8.h
+	Common/Data/Encoding/Utf16.h
+	Common/Data/Format/RIFF.cpp
+	Common/Data/Format/RIFF.h
+	Common/Data/Format/IniFile.cpp
+	Common/Data/Format/IniFile.h
+	Common/Data/Format/JSONReader.h
+	Common/Data/Format/JSONReader.cpp
+	Common/Data/Format/JSONWriter.h
+	Common/Data/Format/JSONWriter.cpp
+	Common/Data/Format/PNGLoad.cpp
+	Common/Data/Format/PNGLoad.h
+	Common/Data/Format/ZIMLoad.cpp
+	Common/Data/Format/ZIMLoad.h
+	Common/Data/Format/ZIMSave.cpp
+	Common/Data/Format/ZIMSave.h
+	Common/Data/Hash/Hash.cpp
+	Common/Data/Hash/Hash.h
+	Common/Data/Text/I18n.cpp
+	Common/Data/Text/I18n.h
+	Common/Data/Text/Parsers.cpp
+	Common/Data/Text/Parsers.h
+	Common/Data/Text/WrapText.cpp
+	Common/Data/Text/WrapText.h
+	Common/Data/Random/Rng.h
+	Common/File/VFS/VFS.h
+	Common/File/VFS/VFS.cpp
+	Common/File/VFS/AssetReader.cpp
+	Common/File/VFS/AssetReader.h
+	Common/File/DiskFree.h
+	Common/File/DiskFree.cpp
+	Common/File/PathBrowser.h
+	Common/File/PathBrowser.cpp
+	Common/File/FileUtil.cpp
+	Common/File/FileUtil.h
+	Common/File/DirListing.cpp
+	Common/File/DirListing.h
+	Common/File/FileDescriptor.cpp
+	Common/File/FileDescriptor.h
+	Common/GPU/DataFormat.h
+	Common/GPU/thin3d.cpp
+	Common/GPU/thin3d.h
+	Common/GPU/thin3d_create.h
+	Common/GPU/Shader.cpp
+	Common/GPU/Shader.h
+	Common/GPU/ShaderWriter.cpp
+	Common/GPU/ShaderWriter.h
+	Common/GPU/ShaderTranslation.h
+	Common/GPU/ShaderTranslation.cpp
+	Common/GPU/OpenGL/GLCommon.h
+	Common/GPU/OpenGL/GLDebugLog.cpp
+	Common/GPU/OpenGL/GLDebugLog.h
+	Common/GPU/OpenGL/GLSLProgram.cpp
+	Common/GPU/OpenGL/GLSLProgram.h
+	Common/GPU/OpenGL/gl3stub.c
+	Common/GPU/OpenGL/gl3stub.h
+	Common/GPU/OpenGL/GLFeatures.cpp
+	Common/GPU/OpenGL/GLFeatures.h
+	Common/GPU/OpenGL/thin3d_gl.cpp
+	Common/GPU/OpenGL/GLRenderManager.cpp
+	Common/GPU/OpenGL/GLRenderManager.h
+	Common/GPU/OpenGL/GLQueueRunner.cpp
+	Common/GPU/OpenGL/GLQueueRunner.h
+	Common/GPU/OpenGL/DataFormatGL.cpp
+	Common/GPU/OpenGL/DataFormatGL.h
+	Common/GPU/Vulkan/VulkanDebug.cpp
+	Common/GPU/Vulkan/VulkanDebug.h
+	Common/GPU/Vulkan/VulkanContext.cpp
+	Common/GPU/Vulkan/VulkanContext.h
+	Common/GPU/Vulkan/VulkanImage.cpp
+	Common/GPU/Vulkan/VulkanImage.h
+	Common/GPU/Vulkan/VulkanLoader.cpp
+	Common/GPU/Vulkan/VulkanLoader.h
+	Common/GPU/Vulkan/VulkanMemory.cpp
+	Common/GPU/Vulkan/VulkanMemory.h
+	Common/GPU/Vulkan/thin3d_vulkan.cpp
+	Common/GPU/Vulkan/VulkanRenderManager.cpp
+	Common/GPU/Vulkan/VulkanRenderManager.h
+	Common/GPU/Vulkan/VulkanQueueRunner.cpp
+	Common/GPU/Vulkan/VulkanQueueRunner.h
+	Common/Input/GestureDetector.cpp
+	Common/Input/GestureDetector.h
+	Common/Input/KeyCodes.h
+	Common/Input/InputState.cpp
+	Common/Input/InputState.h
+	Common/Math/fast/fast_math.c
+	Common/Math/fast/fast_matrix.c
+	Common/Math/fast/fast_matrix_neon.S
+	Common/Math/fast/fast_matrix_sse.c
+	Common/Math/curves.cpp
+	Common/Math/curves.h
+	Common/Math/expression_parser.cpp
+	Common/Math/expression_parser.h
+	Common/Math/lin/matrix4x4.cpp
+	Common/Math/lin/matrix4x4.h
+	Common/Math/lin/vec3.cpp
+	Common/Math/lin/vec3.h
+	Common/Math/math_util.cpp
+	Common/Math/math_util.h
+	Common/Net/HTTPClient.cpp
+	Common/Net/HTTPClient.h
+	Common/Net/HTTPHeaders.cpp
+	Common/Net/HTTPHeaders.h
+	Common/Net/HTTPServer.cpp
+	Common/Net/HTTPServer.h
+	Common/Net/Resolve.cpp
+	Common/Net/Resolve.h
+	Common/Net/Sinks.cpp
+	Common/Net/Sinks.h
+	Common/Net/URL.cpp
+	Common/Net/URL.h
+	Common/Net/WebsocketServer.cpp
+	Common/Net/WebsocketServer.h
+	Common/Profiler/Profiler.cpp
+	Common/Profiler/Profiler.h
+	Common/Render/TextureAtlas.cpp
+	Common/Render/TextureAtlas.h
+	Common/Render/DrawBuffer.cpp
+	Common/Render/DrawBuffer.h
+	Common/Render/Text/draw_text.cpp
+	Common/Render/Text/draw_text.h
+	Common/Render/Text/draw_text_android.cpp
+	Common/Render/Text/draw_text_android.h
+	Common/Render/Text/draw_text_win.cpp
+	Common/Render/Text/draw_text_win.h
+	Common/Render/Text/draw_text_uwp.cpp
+	Common/Render/Text/draw_text_uwp.h
+	Common/System/Display.cpp
+	Common/System/Display.h
+	Common/Thread/Executor.cpp
+	Common/Thread/Executor.h
+	Common/Thread/PrioritizedWorkQueue.cpp
+	Common/Thread/PrioritizedWorkQueue.h
+	Common/Thread/ThreadUtil.cpp
+	Common/Thread/ThreadUtil.h
+	Common/Thread/ThreadPool.cpp
+	Common/Thread/ThreadPool.h
+	Common/UI/Root.cpp
+	Common/UI/Root.h
+	Common/UI/Screen.cpp
+	Common/UI/Screen.h
+	Common/UI/UI.cpp
+	Common/UI/UI.h
+	Common/UI/Context.cpp
+	Common/UI/Context.h
+	Common/UI/UIScreen.cpp
+	Common/UI/UIScreen.h
+	Common/UI/Tween.cpp
+	Common/UI/Tween.h
+	Common/UI/View.cpp
+	Common/UI/View.h
+	Common/UI/ViewGroup.cpp
+	Common/UI/ViewGroup.h
+	Common/BitScan.h
+	Common/BitSet.h
+	Common/Buffer.h
+	Common/Buffer.cpp
+	Common/CodeBlock.h
+	Common/ColorConv.cpp
+	Common/ColorConv.h
+	Common/Common.h
+	Common/CommonFuncs.h
+	Common/CommonTypes.h
+	Common/ConsoleListener.cpp
+	Common/ConsoleListener.h
+	Common/DbgNew.h
+	Common/FakeEmitter.h
+	Common/FakeCPUDetect.cpp
+	Common/ExceptionHandlerSetup.cpp
+	Common/ExceptionHandlerSetup.h
+	Common/Log.h
+	Common/Log.cpp
 	Common/LogManager.cpp
 	Common/LogManager.h
-	Common/MemArena.cpp
+	Common/MakeUnique.h
+	Common/MemArenaAndroid.cpp
+	Common/MemArenaDarwin.cpp
+	Common/MemArenaPosix.cpp
+	Common/MemArenaWin32.cpp
 	Common/MemArena.h
 	Common/MemoryUtil.cpp
 	Common/MemoryUtil.h
-	Common/Misc.cpp
-	Common/MsgHandler.cpp
-	Common/MsgHandler.h
+	Common/OSVersion.cpp
+	Common/OSVersion.h
 	Common/StringUtils.cpp
 	Common/StringUtils.h
-	Common/ThreadPools.cpp
-	Common/ThreadPools.h
-	Common/ThreadSafeList.h
-	Common/Timer.cpp
-	Common/Timer.h)
+	Common/SysError.h
+	Common/SysError.cpp
+	Common/TimeUtil.cpp
+	Common/TimeUtil.h
+)
+
 include_directories(Common)
 setup_target_project(Common Common)
 
-target_link_libraries(Common Snappy::Snappy)
+target_link_libraries(Common Ext::Snappy)
 
-if(WIN32)
-	include_directories(dx9sdk/Include)
-	target_link_libraries(Common winmm d3d9 dxguid dsound)
-endif()
-
-if(TARGET SDL2::SDL2)
-	target_link_libraries(Common SDL2::SDL2)
-endif()
-
-if(USING_GLES2)
+if(USING_GLES2 OR (USING_EGL AND NOT USING_FBDEV))
 	find_package(X11)
 endif()
 
-add_subdirectory(ext)
-
-add_library(vjson STATIC
-	ext/native/ext/vjson/json.cpp
-	ext/native/ext/vjson/json.h
-	ext/native/ext/vjson/block_allocator.cpp
-	ext/native/ext/vjson/block_allocator.h
+add_library(gason STATIC
+    ext/gason/gason.cpp
+    ext/gason/gason.h
 )
 
-add_library(rg_etc1 STATIC
-	ext/native/ext/rg_etc1/rg_etc1.cpp
-	ext/native/ext/rg_etc1/rg_etc1.h)
-include_directories(ext/native/ext/rg_etc1)
 
 if(USE_FFMPEG)
-  if(NOT FFMPEG_DIR)
-    if(NOT USE_SYSTEM_FFMPEG)
-      if(ANDROID)
-        if(ARMV7)
-          set(PLATFORM_ARCH "android/armv7")
-        elseif(ARM)
-          set(PLATFORM_ARCH "android/arm")
-        elseif(X86)
-          set(PLATFORM_ARCH "android/x86")
-        else()
-          set(PLATFORM_ARCH "android/x86_64")
-        endif()
-      elseif(IOS)
-        set(PLATFORM_ARCH "ios/universal")
-      elseif(MACOSX)
-        set(PLATFORM_ARCH "macosx/x86_64")
-      elseif(LINUX)
-        if(ARMV7)
-          set(PLATFORM_ARCH "linux/armv7")
-        elseif(ARM)
-          set(PLATFORM_ARCH "linux/arm")
-        elseif(MIPS)
-          set(PLATFORM_ARCH "linux/mips32")
-        elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
-          set(PLATFORM_ARCH "linux/x86_64")
-        else()
-          set(PLATFORM_ARCH "linux/x86")
-        endif()
-      elseif(WIN32)
-        if(X86_64)
-          set(PLATFORM_ARCH "Windows/x86_64")
-        elseif(X86)
-          set(PLATFORM_ARCH "Windows/x86")
-        endif()
-      endif()
-      if(PLATFORM_ARCH)
-        set(FFMPEG_DIR "ffmpeg/${PLATFORM_ARCH}")
-      else()
-        message("Couldn't find an internal FFmpeg build, using system FFmpeg instead")
-      endif()
-    endif()
-  endif()
+	if(NOT FFMPEG_DIR)
+		if(NOT USE_SYSTEM_FFMPEG)
+			if(ANDROID)
+				if(ARMV7)
+					set(PLATFORM_ARCH "android/armv7")
+				elseif(ARM64)
+					set(PLATFORM_ARCH "android/arm64")
+				elseif(X86_64)
+					set(PLATFORM_ARCH "android/x86_64")
+				elseif(X86)
+					set(PLATFORM_ARCH "android/x86")
+				endif()
+			elseif(IOS)
+				set(PLATFORM_ARCH "ios/universal")
+			elseif(MACOSX)
+				set(PLATFORM_ARCH "macosx/universal")
+			elseif(LINUX)
+				if(ARMV7)
+					set(PLATFORM_ARCH "linux/armv7")
+				elseif(ARM64)
+					set(PLATFORM_ARCH "linux/aarch64")
+				elseif(ARM)
+					set(PLATFORM_ARCH "linux/arm")
+				elseif(MIPS)
+					set(PLATFORM_ARCH "linux/mips32")
+				elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+					set(PLATFORM_ARCH "linux/x86_64")
+				elseif(X86)
+					set(PLATFORM_ARCH "linux/x86")
+				endif()
+			elseif(WIN32)
+				if(X86_64)
+					set(PLATFORM_ARCH "Windows/x86_64")
+				elseif(X86)
+					set(PLATFORM_ARCH "Windows/x86")
+				endif()
+			endif()
+			if(PLATFORM_ARCH)
+				set(FFMPEG_DIR "ffmpeg/${PLATFORM_ARCH}")
+			else()
+				message("Couldn't find an internal FFmpeg build, using system FFmpeg instead")
+			endif()
+		endif()
+	endif()
 
-  find_package(FFmpeg REQUIRED avcodec avformat avutil swresample swscale)
+	find_package(FFmpeg REQUIRED avcodec avformat avutil swresample swscale)
 endif(USE_FFMPEG)
 
 find_package(ZLIB)
-if(ZLIB_FOUND)
+if(ZLIB_FOUND AND NOT ANDROID)
 	include_directories(${ZLIB_INCLUDE_DIR})
 	add_definitions(-DSHARED_ZLIB)
 else()
@@ -469,232 +763,243 @@ else()
 endif()
 
 add_library(cityhash STATIC
-	ext/native/ext/cityhash/city.cpp
-	ext/native/ext/cityhash/city.h
-	ext/native/ext/cityhash/citycrc.h
+	ext/cityhash/city.cpp
+	ext/cityhash/city.h
+	ext/cityhash/citycrc.h
 )
 include_directories(ext/cityhash)
 
-if (NOT MSVC)
+if(NOT MSVC)
 	# These can be fast even for debug.
-	set_target_properties(udis86 PROPERTIES COMPILE_FLAGS "-O3")
-	set_target_properties(cityhash PROPERTIES COMPILE_FLAGS "-O3")
+	set_target_properties(udis86 PROPERTIES COMPILE_FLAGS "-O2")
+	set_target_properties(cityhash PROPERTIES COMPILE_FLAGS "-O2")
 	if(NOT ZLIB_FOUND)
-		set_target_properties(zlib PROPERTIES COMPILE_FLAGS "-O3")
+		set_target_properties(zlib PROPERTIES COMPILE_FLAGS "-O2")
 	endif()
 endif()
 
 
-find_package(LibZip)
-if(LIBZIP_FOUND)
+find_package(LIBZIP)
+if(LIBZIP_FOUND AND USE_SYSTEM_LIBZIP)
 	add_definitions(-DSHARED_LIBZIP)
 else()
 	add_library(libzip STATIC
-		ext/native/ext/libzip/zip.h
-		ext/native/ext/libzip/mkstemp.c
-		ext/native/ext/libzip/zip_add.c
-		ext/native/ext/libzip/zip_add_dir.c
-		ext/native/ext/libzip/zip_close.c
-		ext/native/ext/libzip/zip_delete.c
-		ext/native/ext/libzip/zip_dirent.c
-		ext/native/ext/libzip/zip_entry_free.c
-		ext/native/ext/libzip/zip_entry_new.c
-		ext/native/ext/libzip/zip_err_str.c
-		ext/native/ext/libzip/zip_error.c
-		ext/native/ext/libzip/zip_error_clear.c
-		ext/native/ext/libzip/zip_error_get.c
-		ext/native/ext/libzip/zip_error_get_sys_type.c
-		ext/native/ext/libzip/zip_error_strerror.c
-		ext/native/ext/libzip/zip_error_to_str.c
-		ext/native/ext/libzip/zip_fclose.c
-		ext/native/ext/libzip/zip_file_error_clear.c
-		ext/native/ext/libzip/zip_file_error_get.c
-		ext/native/ext/libzip/zip_file_get_offset.c
-		ext/native/ext/libzip/zip_file_strerror.c
-		ext/native/ext/libzip/zip_filerange_crc.c
-		ext/native/ext/libzip/zip_fopen.c
-		ext/native/ext/libzip/zip_fopen_index.c
-		ext/native/ext/libzip/zip_fread.c
-		ext/native/ext/libzip/zip_free.c
-		ext/native/ext/libzip/zip_get_archive_comment.c
-		ext/native/ext/libzip/zip_get_archive_flag.c
-		ext/native/ext/libzip/zip_get_file_comment.c
-		ext/native/ext/libzip/zip_get_name.c
-		ext/native/ext/libzip/zip_get_num_files.c
-		ext/native/ext/libzip/zip_memdup.c
-		ext/native/ext/libzip/zip_name_locate.c
-		ext/native/ext/libzip/zip_new.c
-		ext/native/ext/libzip/zip_open.c
-		ext/native/ext/libzip/zip_rename.c
-		ext/native/ext/libzip/zip_replace.c
-		ext/native/ext/libzip/zip_set_archive_comment.c
-		ext/native/ext/libzip/zip_set_archive_flag.c
-		ext/native/ext/libzip/zip_set_file_comment.c
-		ext/native/ext/libzip/zip_set_name.c
-		ext/native/ext/libzip/zip_source_buffer.c
-		ext/native/ext/libzip/zip_source_file.c
-		ext/native/ext/libzip/zip_source_filep.c
-		ext/native/ext/libzip/zip_source_free.c
-		ext/native/ext/libzip/zip_source_function.c
-		ext/native/ext/libzip/zip_source_zip.c
-		ext/native/ext/libzip/zip_stat.c
-		ext/native/ext/libzip/zip_stat_index.c
-		ext/native/ext/libzip/zip_stat_init.c
-		ext/native/ext/libzip/zip_strerror.c
-		ext/native/ext/libzip/zip_unchange.c
-		ext/native/ext/libzip/zip_unchange_all.c
-		ext/native/ext/libzip/zip_unchange_archive.c
-		ext/native/ext/libzip/zip_unchange_data.c)
+		ext/libzip/zip.h
+		ext/libzip/mkstemp.c
+		ext/libzip/zip_add.c
+		ext/libzip/zip_add_dir.c
+		ext/libzip/zip_close.c
+		ext/libzip/zip_delete.c
+		ext/libzip/zip_dirent.c
+		ext/libzip/zip_entry_free.c
+		ext/libzip/zip_entry_new.c
+		ext/libzip/zip_err_str.c
+		ext/libzip/zip_error.c
+		ext/libzip/zip_error_clear.c
+		ext/libzip/zip_error_get.c
+		ext/libzip/zip_error_get_sys_type.c
+		ext/libzip/zip_error_strerror.c
+		ext/libzip/zip_error_to_str.c
+		ext/libzip/zip_fclose.c
+		ext/libzip/zip_file_error_clear.c
+		ext/libzip/zip_file_error_get.c
+		ext/libzip/zip_file_get_offset.c
+		ext/libzip/zip_file_strerror.c
+		ext/libzip/zip_filerange_crc.c
+		ext/libzip/zip_fopen.c
+		ext/libzip/zip_fopen_index.c
+		ext/libzip/zip_fread.c
+		ext/libzip/zip_free.c
+		ext/libzip/zip_get_archive_comment.c
+		ext/libzip/zip_get_archive_flag.c
+		ext/libzip/zip_get_file_comment.c
+		ext/libzip/zip_get_name.c
+		ext/libzip/zip_get_num_files.c
+		ext/libzip/zip_memdup.c
+		ext/libzip/zip_name_locate.c
+		ext/libzip/zip_new.c
+		ext/libzip/zip_open.c
+		ext/libzip/zip_rename.c
+		ext/libzip/zip_replace.c
+		ext/libzip/zip_set_archive_comment.c
+		ext/libzip/zip_set_archive_flag.c
+		ext/libzip/zip_set_file_comment.c
+		ext/libzip/zip_set_name.c
+		ext/libzip/zip_source_buffer.c
+		ext/libzip/zip_source_file.c
+		ext/libzip/zip_source_filep.c
+		ext/libzip/zip_source_free.c
+		ext/libzip/zip_source_function.c
+		ext/libzip/zip_source_zip.c
+		ext/libzip/zip_stat.c
+		ext/libzip/zip_stat_index.c
+		ext/libzip/zip_stat_init.c
+		ext/libzip/zip_strerror.c
+		ext/libzip/zip_unchange.c
+		ext/libzip/zip_unchange_all.c
+		ext/libzip/zip_unchange_archive.c
+		ext/libzip/zip_unchange_data.c
+	)
 	target_link_libraries(libzip)
-	include_directories(ext/native/ext/libzip)
+	include_directories(ext/libzip)
 	set(LIBZIP_LIBRARY libzip)
 endif()
 
-# FindPNG does a few things we don't want. So do it ourselves. Fixed to libpng17
-find_path(PNG_PNG_INCLUDE_DIR NAMES "libpng17/png.h")
-find_library(PNG_LIBRARY NAMES png17 libpng17)
-find_package(PackageHandleStandardArgs)
-find_package_handle_standard_args(PNG REQUIRED_VARS PNG_LIBRARY PNG_PNG_INCLUDE_DIR)
-if (PNG_FOUND)
-	include_directories(${PNG_PNG_INCLUDE_DIR})
+# Arm platforms require at least libpng17.
+if(ANDROID OR ARMV7 OR ARM64 OR ARM OR IOS)
+	set(PNG_REQUIRED_VERSION 1.7)
+else()
+	set(PNG_REQUIRED_VERSION 1.6)
+endif()
+
+find_package(PNG ${PNG_REQUIRED_VERSION})
+if(PNG_FOUND)
+	include_directories(${PNG_INCLUDE_DIRS})
 else()
 	if(ARM)
 		set(PNG_ARM_INCLUDES
-            ext/native/ext/libpng17/arm/arm_init.c
-            ext/native/ext/libpng17/arm/filter_neon.S
-            ext/native/ext/libpng17/arm/filter_neon_intrinsics.c
-        )
+			ext/libpng17/arm/arm_init.c
+			ext/libpng17/arm/filter_neon.S
+			ext/libpng17/arm/filter_neon_intrinsics.c
+		)
+	elseif(ARM64)
+		set(PNG_ARM_INCLUDES
+			ext/libpng17/arm/arm_init.c
+			ext/libpng17/arm/filter_neon_intrinsics.c
+		)
 	endif()
 	add_library(png17 STATIC
-		ext/native/ext/libpng17/pngconf.h
-		ext/native/ext/libpng17/pngdebug.h
-		ext/native/ext/libpng17/png.c
-		ext/native/ext/libpng17/png.h
-		ext/native/ext/libpng17/pngerror.c
-		ext/native/ext/libpng17/pngget.c
-		ext/native/ext/libpng17/pnginfo.h
-		ext/native/ext/libpng17/pnglibconf.h
-		ext/native/ext/libpng17/pngmem.c
-		ext/native/ext/libpng17/pngpread.c
-		ext/native/ext/libpng17/pngpriv.h
-		ext/native/ext/libpng17/pngread.c
-		ext/native/ext/libpng17/pngrio.c
-		ext/native/ext/libpng17/pngrtran.c
-		ext/native/ext/libpng17/pngrutil.c
-		ext/native/ext/libpng17/pngset.c
-		ext/native/ext/libpng17/pngstruct.h
-		ext/native/ext/libpng17/pngtrans.c
-		ext/native/ext/libpng17/pngwio.c
-		ext/native/ext/libpng17/pngwrite.c
-		ext/native/ext/libpng17/pngwtran.c
-		ext/native/ext/libpng17/pngwutil.c
-		${PNG_ARM_INCLUDES} )
-	set(PNG_LIBRARY png17)
-	include_directories(ext/native/ext)
+		ext/libpng17/pngconf.h
+		ext/libpng17/pngdebug.h
+		ext/libpng17/png.c
+		ext/libpng17/png.h
+		ext/libpng17/pngerror.c
+		ext/libpng17/pngget.c
+		ext/libpng17/pnginfo.h
+		ext/libpng17/pnglibconf.h
+		ext/libpng17/pngmem.c
+		ext/libpng17/pngpread.c
+		ext/libpng17/pngpriv.h
+		ext/libpng17/pngread.c
+		ext/libpng17/pngrio.c
+		ext/libpng17/pngrtran.c
+		ext/libpng17/pngrutil.c
+		ext/libpng17/pngset.c
+		ext/libpng17/pngstruct.h
+		ext/libpng17/pngtrans.c
+		ext/libpng17/pngwio.c
+		ext/libpng17/pngwrite.c
+		ext/libpng17/pngwtran.c
+		ext/libpng17/pngwutil.c
+		${PNG_ARM_INCLUDES}
+	)
+	set(PNG_LIBRARIES png17)
+	include_directories(ext/libpng17)
 endif()
 
 set(nativeExtra)
 set(nativeExtraLibs)
 
 if(ANDROID)
-  set(nativeExtra ${nativeExtra}
-    Common/GL/GLInterface/EGLAndroid.cpp
-    Common/GL/GLInterface/EGLAndroid.h
-    Common/GL/GLInterface/EGL.cpp
-    Common/GL/GLInterface/EGL.h
-    Common/GL/GLInterface/GLInterface.cpp
-    Common/GL/GLInterfaceBase.h)
-
 	set(nativeExtra ${nativeExtra}
-		ext/native/base/NativeApp.h
+		Common/GL/GLInterface/EGLAndroid.cpp
+		Common/GL/GLInterface/EGLAndroid.h
+		Common/GL/GLInterface/EGL.cpp
+		Common/GL/GLInterface/EGL.h
+		Common/GL/GLInterface/GLInterface.cpp
+		Common/GL/GLInterfaceBase.h
+	)
+
+	set(NativeAppSource ${NativeAppSource}
 		android/jni/app-android.cpp
-		android/jni/native_audio.cpp
-		android/jni/native_audio.h
-		android/jni/native-audio-so.cpp
-		android/jni/native-audio-so.h)
+		android/jni/AndroidEGLContext.cpp
+		android/jni/AndroidEGLContext.h
+		android/jni/AndroidJavaGLContext.cpp
+		android/jni/AndroidJavaGLContext.h
+		android/jni/AndroidVulkanContext.cpp
+		android/jni/AndroidVulkanContext.h
+		android/jni/AndroidGraphicsContext.h
+		android/jni/AndroidAudio.cpp
+		android/jni/AndroidAudio.h
+		android/jni/OpenSLContext.cpp
+		android/jni/OpenSLContext.h
+	)
 	# No target
 elseif(IOS)
 	set(nativeExtra ${nativeExtra}
 		ios/main.mm
 		ios/AppDelegate.mm
 		ios/AppDelegate.h
+		ios/DisplayManager.h
+		ios/DisplayManager.mm
 		ios/ViewController.mm
 		ios/ViewController.h
-		ios/iOSCoreAudio.cpp
+		ios/iOSCoreAudio.mm
 		ios/iOSCoreAudio.h
+		ios/CameraHelper.mm
+		ios/CameraHelper.h
+		ios/LocationHelper.mm
+		ios/LocationHelper.h
+		ios/PPSSPPUIApplication.h
+		ios/PPSSPPUIApplication.mm
+		ios/SmartKeyboardMap.cpp
+		ios/SmartKeyboardMap.hpp
+		ios/SubtleVolume.h
+		ios/SubtleVolume.mm
 		ios/iCade/iCadeReaderView.h
 		ios/iCade/iCadeReaderView.m
-		ios/iCade/iCadeState.h)
-	set(nativeExtraLibs ${nativeExtraLibs} "-framework Foundation -framework AudioToolbox -framework CoreGraphics -framework QuartzCore -framework UIKit -framework GLKit -framework OpenAL")
+		ios/iCade/iCadeState.h
+	)
+	set(nativeExtraLibs ${nativeExtraLibs} "-framework Foundation -framework MediaPlayer -framework AudioToolbox -framework CoreGraphics -framework QuartzCore -framework UIKit -framework GLKit -framework OpenAL -framework AVFoundation -framework CoreLocation -framework CoreVideo -framework CoreMedia" )
 	if(EXISTS "${CMAKE_IOS_SDK_ROOT}/System/Library/Frameworks/GameController.framework")
 		set(nativeExtraLibs ${nativeExtraLibs} "-weak_framework GameController")
 	endif()
-	
+
 	if(NOT ICONV_LIBRARY)
 		set(nativeExtraLibs ${nativeExtraLibs} iconv)
 	endif()
 
 	set_source_files_properties(ios/AppDelegate.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
 	set_source_files_properties(ios/ViewController.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+	set_source_files_properties(ios/iOSCoreAudio.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+	set_source_files_properties(ios/PPSSPPUIApplication.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+	set_source_files_properties(ios/iCade/iCadeReaderView.m PROPERTIES COMPILE_FLAGS -fobjc-arc)
+	set_source_files_properties(ios/main.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+	set_source_files_properties(ios/CameraHelper.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+	set_source_files_properties(ios/LocationHelper.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
 
 	set(TargetBin PPSSPP)
 elseif(USING_QT_UI)
-    set(CMAKE_AUTOMOC ON)
-
-	find_package(Qt5 COMPONENTS Multimedia OpenGL Gui Core)
-    set(Qt_UI
-      Qt/Debugger/debugger_disasm.ui
-      Qt/Debugger/debugger_displaylist.ui
-      Qt/Debugger/debugger_memory.ui
-      Qt/Debugger/debugger_memorytex.ui
-      Qt/Debugger/debugger_vfpu.ui
-    )
-    qt5_wrap_ui(QT_UI_GEN ${Qt_UI})
-    list(APPEND NativeAppSource
-      ${QT_UI_GEN}
-      ext/native/base/QtMain.cpp
-      ext/native/base/QtMain.h
-      Qt/mainwindow.cpp
-      Qt/mainwindow.h
-      Qt/Debugger/ctrldisasmview.cpp
-      Qt/Debugger/ctrldisasmview.h
-      Qt/Debugger/ctrlmemview.cpp
-      Qt/Debugger/ctrlmemview.h
-      Qt/Debugger/ctrlregisterlist.cpp
-      Qt/Debugger/ctrlregisterlist.h
-      Qt/Debugger/ctrlvfpuview.cpp
-      Qt/Debugger/ctrlvfpuview.h
-      Qt/Debugger/debugger_disasm.cpp
-      Qt/Debugger/debugger_disasm.h
-      Qt/Debugger/debugger_displaylist.cpp
-      Qt/Debugger/debugger_displaylist.h
-      Qt/Debugger/debugger_memory.cpp
-      Qt/Debugger/debugger_memory.h
-      Qt/Debugger/debugger_memorytex.cpp
-      Qt/Debugger/debugger_memorytex.h
-      Qt/Debugger/debugger_vfpu.cpp
-      Qt/Debugger/debugger_vfpu.h
-    )
-    add_definitions(-DUSING_QT_UI)
-    include_directories(${CMAKE_CURRENT_BINARY_DIR} Qt Qt/Debugger)
-	set(nativeExtraLibs ${nativeExtraLibs} Qt5::Multimedia Qt5::OpenGL Qt5::Gui Qt5::Core)
-	set(TargetBin PPSSPPQt)
-elseif(TARGET SDL2::SDL2)
-	set(TargetBin PPSSPPSDL)
-	# Require SDL
-	add_definitions(-DSDL)
-	set(nativeExtra ${nativeExtra}
-		SDL/SDLJoystick.h
-		SDL/SDLJoystick.cpp
-		ext/native/base/PCMain.cpp)
-	set(nativeExtraLibs ${nativeExtraLibs} SDL2::SDL2)
-	if(APPLE)
-		set(nativeExtra ${nativeExtra} SDL/SDLMain.h SDL/SDLMain.mm)
-		set(nativeExtraLibs ${nativeExtraLibs} ${COCOA_LIBRARY})
-	elseif(USING_EGL)
-		set(nativeExtraLibs ${nativeExtraLibs} pthread EGL)
+	set(CMAKE_AUTOMOC ON)
+	find_package(Qt5 COMPONENTS OpenGL Gui Core Multimedia)
+	list(APPEND NativeAppSource
+		Qt/QtMain.cpp
+		Qt/QtMain.h
+		Qt/QtHost.cpp
+		Qt/QtHost.h
+		Qt/mainwindow.cpp
+		Qt/mainwindow.h
+	)
+	add_definitions(-DUSING_QT_UI)
+	if(USING_GLES2)
+		add_definitions(-DQT_OPENGL_ES -DQT_OPENGL_ES_2)
 	endif()
-	set(TargetBin PPSSPPSDL)
+
+	include_directories(Qt)
+	include_directories(${CMAKE_CURRENT_BINARY_DIR})
+	set(nativeExtraLibs ${nativeExtraLibs} Qt5::OpenGL Qt5::Gui Qt5::Core Qt5::Multimedia)
+	set(TargetBin PPSSPPQt)
+
+	# Enable SDL joystick if SDL is found
+	if(SDL2_FOUND)
+		add_definitions(-DSDL)
+		set(nativeExtra ${nativeExtra}
+			SDL/SDLJoystick.h
+			SDL/SDLJoystick.cpp
+		)
+		set(nativeExtraLibs ${nativeExtraLibs} SDL2::SDL2)
+	endif()
+
 elseif(WIN32)
 	# Don't care about SDL.
 	set(TargetBin PPSSPPWindows)
@@ -703,14 +1008,50 @@ elseif(WIN32)
 	else()
 		link_directories(dx9sdk/Lib/x86)
 	endif()
-else()
+elseif(TARGET SDL2::SDL2)
+	set(TargetBin PPSSPPSDL)
+	# Require SDL
+	add_definitions(-DSDL)
+	set(nativeExtra ${nativeExtra}
+		SDL/SDLJoystick.h
+		SDL/SDLJoystick.cpp
+		SDL/SDLMain.cpp
+		SDL/SDLGLGraphicsContext.cpp
+		SDL/SDLVulkanGraphicsContext.cpp
+	)
+	set(nativeExtraLibs ${nativeExtraLibs} SDL2::SDL2)
+	if(APPLE)
+		set(nativeExtra ${nativeExtra} SDL/SDLMain.h SDL/SDLMain.mm SDL/SDLCocoaMetalLayer.h SDL/SDLCocoaMetalLayer.mm)
+		set(nativeExtraLibs ${nativeExtraLibs} ${COCOA_LIBRARY} ${QUARTZ_CORE_LIBRARY})
+	elseif(USING_EGL)
+		set(nativeExtraLibs ${nativeExtraLibs} pthread)
+	endif()
+elseif(NOT LIBRETRO)
 	message(FATAL_ERROR "Could not find SDL2. Failing.")
 endif()
 
+if(WIN32)
+	if(MINGW)
+		set(CMAKE_RC_COMPILE_OBJECT "<CMAKE_RC_COMPILER> -O coff <INCLUDES> <SOURCE> <OBJECT>")
+		# required when using the dx9sdk include paths
+		add_definitions(-include ${CMAKE_CURRENT_SOURCE_DIR}/Windows/mingw_defines.h)
+	else()
+		target_link_libraries(Common dxguid)
+	endif()
+	target_link_libraries(Common winmm d3d9 dsound)
+endif()
+
+if(TARGET SDL2::SDL2 AND NOT IOS)
+	target_link_libraries(Common SDL2::SDL2)
+endif()
+
+
 list(APPEND NativeAppSource
 	android/jni/TestRunner.cpp
+	UI/DiscordIntegration.cpp
 	UI/NativeApp.cpp
 	UI/BackgroundAudio.cpp
+	UI/ChatScreen.cpp
 	UI/DevScreens.cpp
 	UI/DisplayLayoutEditor.cpp
 	UI/DisplayLayoutScreen.cpp
@@ -721,6 +1062,7 @@ list(APPEND NativeAppSource
 	UI/PauseScreen.cpp
 	UI/GameScreen.cpp
 	UI/GameSettingsScreen.cpp
+	UI/GPUDriverTestScreen.cpp
 	UI/TiltAnalogSettingsScreen.cpp
 	UI/TiltEventProcessor.cpp
 	UI/TouchControlLayoutScreen.cpp
@@ -735,193 +1077,53 @@ list(APPEND NativeAppSource
 	UI/CwCheatScreen.cpp
 	UI/InstallZipScreen.cpp
 	UI/ProfilerDraw.cpp
-	UI/ui_atlas.cpp
-	UI/ComboKeyMappingScreen.cpp)
+	UI/TextureUtil.cpp
+	UI/ComboKeyMappingScreen.cpp
+)
 
 if(ANDROID)
-	if (ARM)
+	if(ARM)
 		set(NativeAppSource ${NativeAppSource} android/jni/ArmEmitterTest.cpp)
-  elseif (ARM64)
+	elseif(ARM64)
 		set(NativeAppSource ${NativeAppSource} android/jni/Arm64EmitterTest.cpp)
 	endif()
-	set(nativeExtra ${nativeExtra} ${NativeAppSource})
-endif()
 
-set(THIN3D_PLATFORMS ext/native/thin3d/thin3d_gl.cpp)
-if(VULKAN)
-  set(THIN3D_PLATFORMS ${THIN3D_PLATFORMS} ext/native/thin3d/thin3d_vulkan.cpp)
-endif()
-if(WIN32)
-  set(THIN3D_PLATFORMS ${THIN3D_PLATFORMS}
-    ext/native/thin3d/thin3d_d3d9.cpp
-    ext/native/thin3d/thin3d_d3d11.cpp
-    ext/native/thin3d/d3dx9_loader.cpp
-    ext/native/thin3d/d3dx9_loader.h)
+	if (NOT LIBRETRO)
+		set(nativeExtra ${nativeExtra} ${NativeAppSource})
+	endif()
 endif()
 
 add_library(native STATIC
 	${nativeExtra}
-	ext/native/base/backtrace.cpp
-	ext/native/base/backtrace.h
-	ext/native/base/basictypes.h
-	ext/native/base/buffer.cpp
-	ext/native/base/buffer.h
-	ext/native/base/colorutil.cpp
-	ext/native/base/colorutil.h
-	ext/native/base/display.cpp
-	ext/native/base/display.h
-	ext/native/base/linked_ptr.h
-	ext/native/base/logging.h
-	ext/native/base/mutex.h
-	ext/native/base/stringutil.cpp
-	ext/native/base/stringutil.h
-	ext/native/base/timeutil.cpp
-	ext/native/base/timeutil.h
-	ext/native/data/compression.cpp
-	ext/native/data/compression.h
-	ext/native/ext/vjson/json.cpp
-	ext/native/ext/vjson/json.h
-	ext/native/ext/vjson/block_allocator.cpp
-	ext/native/ext/vjson/block_allocator.h
-	ext/native/file/chunk_file.cpp
-	ext/native/file/chunk_file.h
-	ext/native/file/fd_util.cpp
-	ext/native/file/fd_util.h
-	ext/native/file/file_util.cpp
-	ext/native/file/file_util.h
-	ext/native/file/free.cpp
-	ext/native/file/free.h
-	ext/native/file/ini_file.cpp
-	ext/native/file/ini_file.h
-	ext/native/file/path.cpp
-	ext/native/file/path.h
-	ext/native/file/vfs.h
-	ext/native/file/zip_read.cpp
-	ext/native/file/zip_read.h
-	ext/native/gfx/gl_common.h
-	ext/native/gfx/gl_debug_log.cpp
-	ext/native/gfx/gl_debug_log.h
-	ext/native/gfx/gl_lost_manager.cpp
-	ext/native/gfx/gl_lost_manager.h
-	ext/native/gfx/texture_atlas.cpp
-	ext/native/gfx/texture_atlas.h
-	ext/native/gfx_es2/draw_buffer.cpp
-	ext/native/gfx_es2/draw_buffer.h
-	ext/native/gfx_es2/draw_text.cpp
-	ext/native/gfx_es2/draw_text.h
-	ext/native/gfx_es2/gpu_features.cpp
-	ext/native/gfx_es2/gpu_features.h
-	ext/native/gfx_es2/glsl_program.cpp
-	ext/native/gfx_es2/glsl_program.h
-	ext/native/gfx_es2/gl3stub.c
-	ext/native/gfx_es2/gl3stub.h
-	ext/native/i18n/i18n.cpp
-	ext/native/i18n/i18n.h
-	ext/native/image/png_load.cpp
-	ext/native/image/png_load.h
-	ext/native/image/zim_load.cpp
-	ext/native/image/zim_load.h
-	ext/native/image/zim_save.cpp
-	ext/native/image/zim_save.h
-	ext/native/input/gesture_detector.cpp
-	ext/native/input/gesture_detector.h
-	ext/native/input/keycodes.h
-	ext/native/input/input_state.h
-	ext/native/input/input_state.cpp
-	ext/native/math/fast/fast_math.c
-	ext/native/math/fast/fast_matrix.c
-	ext/native/math/fast/fast_matrix_neon.S
-	ext/native/math/fast/fast_matrix_sse.c
-	ext/native/math/curves.cpp
-	ext/native/math/curves.h
-	ext/native/math/expression_parser.cpp
-	ext/native/math/expression_parser.h
-	ext/native/math/lin/matrix4x4.cpp
-	ext/native/math/lin/matrix4x4.h
-	ext/native/math/lin/plane.cpp
-	ext/native/math/lin/plane.h
-	ext/native/math/lin/quat.cpp
-	ext/native/math/lin/quat.h
-	ext/native/math/lin/ray.h
-	ext/native/math/lin/vec3.cpp
-	ext/native/math/lin/vec3.h
-	ext/native/math/math_util.cpp
-	ext/native/math/math_util.h
-	ext/native/net/http_client.cpp
-	ext/native/net/http_client.h
-	ext/native/net/http_headers.cpp
-	ext/native/net/http_headers.h
-	ext/native/net/http_server.cpp
-	ext/native/net/http_server.h
-	ext/native/net/resolve.cpp
-	ext/native/net/resolve.h
-	ext/native/net/sinks.cpp
-	ext/native/net/sinks.h
-	ext/native/net/url.cpp
-	ext/native/net/url.h
-	ext/native/profiler/profiler.cpp
-	ext/native/profiler/profiler.h
-	ext/native/thin3d/thin3d.cpp
-	ext/native/thin3d/thin3d.h
-	${THIN3D_PLATFORMS}
-	ext/native/thread/executor.cpp
-	ext/native/thread/executor.h
-	ext/native/thread/prioritizedworkqueue.cpp
-	ext/native/thread/prioritizedworkqueue.h
-	ext/native/thread/threadutil.cpp
-	ext/native/thread/threadutil.h
-	ext/native/thread/threadpool.cpp
-	ext/native/thread/threadpool.h
-	ext/native/ui/screen.cpp
-	ext/native/ui/screen.h
-	ext/native/ui/ui.cpp
-	ext/native/ui/ui.h
-	ext/native/ui/ui_context.cpp
-	ext/native/ui/ui_context.h
-	ext/native/ui/ui_screen.cpp
-	ext/native/ui/ui_screen.h
-	ext/native/ui/view.cpp
-	ext/native/ui/view.h
-	ext/native/ui/viewgroup.cpp
-	ext/native/ui/viewgroup.h
-	ext/native/ui/virtual_input.cpp
-	ext/native/ui/virtual_input.h
-	ext/native/util/hash/hash.cpp
-	ext/native/util/hash/hash.h
-	ext/native/util/random/rng.h
-	ext/native/util/text/utf8.h
-	ext/native/util/text/utf8.cpp
-	ext/native/util/text/parsers.h
-	ext/native/util/text/parsers.cpp
-	ext/native/util/text/wrap_text.h
-	ext/native/util/text/wrap_text.cpp
-	ext/native/util/const_map.h
-	ext/native/ext/jpge/jpgd.cpp
-	ext/native/ext/jpge/jpgd.h
-	ext/native/ext/jpge/jpge.cpp
-	ext/native/ext/jpge/jpge.h)
-include_directories(ext/native)
+	Common/Render/Text/draw_text_qt.cpp
+	Common/Render/Text/draw_text_qt.h
+	ext/jpge/jpgd.cpp
+	ext/jpge/jpgd.h
+	ext/jpge/jpge.cpp
+	ext/jpge/jpge.h
+)
 
-if (LINUX AND NOT ANDROID)
-	SET(RT_LIB rt)
+if(LINUX AND NOT ANDROID)
+	set(RT_LIB rt)
 endif()
 
-SET(ATOMIC_LIB)
+set(ATOMIC_LIB)
 if(ANDROID)
-	SET(ATOMIC_LIB atomic)
+	set(ATOMIC_LIB atomic)
 endif()
 
-target_link_libraries(native ${LIBZIP_LIBRARY} ${ZLIB_LIBRARY} ${PNG_LIBRARY} rg_etc1 vjson udis86 ${RT_LIB} ${nativeExtraLibs} ${ATOMIC_LIB})
-if(TARGET glew)
-  target_link_libraries(native glew)
+target_link_libraries(native ${LIBZIP_LIBRARY} ${PNG_LIBRARIES} ${ZLIB_LIBRARY} gason udis86 ${RT_LIB} ${nativeExtraLibs} ${ATOMIC_LIB} Common)
+if(TARGET Ext::GLEW)
+	target_link_libraries(native Ext::GLEW)
 endif()
 
 if(ANDROID)
 	target_link_libraries(native log EGL OpenSLES)
 elseif(WIN32)
 	target_link_libraries(native ws2_32 winmm)
+elseif(${CMAKE_SYSTEM_NAME} MATCHES "^(DragonFly|FreeBSD|NetBSD)$")
+	target_link_libraries(native execinfo)
 endif()
-setup_target_project(native native)
 
 add_library(kirk STATIC
 	ext/libkirk/AES.c
@@ -933,7 +1135,8 @@ add_library(kirk STATIC
 	ext/libkirk/bn.c
 	ext/libkirk/ec.c
 	ext/libkirk/kirk_engine.c
-	ext/libkirk/kirk_engine.h)
+	ext/libkirk/kirk_engine.h
+)
 include_directories(ext/libkirk)
 
 add_library(sfmt19937 STATIC
@@ -960,10 +1163,6 @@ include_directories(ext/xxhash)
 set(CoreExtra)
 set(CoreExtraLibs)
 
-if(VULKAN)
-  set(CoreExtraLibs ${CoreExtraLibs} glslang)
-endif()
-
 set(CoreExtra ${CoreExtra}
 	Core/MIPS/IR/IRCompALU.cpp
 	Core/MIPS/IR/IRCompBranch.cpp
@@ -982,7 +1181,7 @@ set(CoreExtra ${CoreExtra}
 	Core/MIPS/IR/IRPassSimplify.h
 	Core/MIPS/IR/IRRegCache.cpp
 	Core/MIPS/IR/IRRegCache.h
-	)
+)
 
 list(APPEND CoreExtra
 	Core/MIPS/ARM/ArmAsm.cpp
@@ -1018,7 +1217,8 @@ list(APPEND CoreExtra
 	Core/MIPS/ARM64/Arm64RegCacheFPU.cpp
 	Core/MIPS/ARM64/Arm64RegCacheFPU.h
 	GPU/Common/VertexDecoderArm64.cpp
-	Core/Util/DisArm64.cpp)
+	Core/Util/DisArm64.cpp
+)
 
 list(APPEND CoreExtra
 	Core/MIPS/x86/Asm.cpp
@@ -1037,65 +1237,55 @@ list(APPEND CoreExtra
 	Core/MIPS/x86/RegCacheFPU.cpp
 	Core/MIPS/x86/RegCacheFPU.h
 	GPU/Common/VertexDecoderX86.cpp
+	GPU/Software/SamplerX86.cpp
 )
 
 list(APPEND CoreExtra
 	Core/MIPS/MIPS/MipsJit.cpp
 	Core/MIPS/MIPS/MipsJit.h
-	GPU/Common/VertexDecoderFake.cpp
 )
 
-if (NOT MOBILE_DEVICE)
+if(NOT MOBILE_DEVICE)
 	set(CoreExtra ${CoreExtra}
 		Core/AVIDump.cpp
 		Core/AVIDump.h
 		Core/WaveFile.cpp
-		Core/WaveFile.h)
-endif()
-
-if(ARMV7)
-	set(CORE_NEON Core/Util/AudioFormatNEON.cpp Core/Util/AudioFormatNEON.h)
+		Core/WaveFile.h
+	)
 endif()
 
 set(GPU_GLES
-	GPU/GLES/DepalettizeShader.cpp
-	GPU/GLES/DepalettizeShader.h
-	GPU/GLES/FBO.cpp
-	GPU/GLES/FBO.h
+	GPU/GLES/DepalettizeShaderGLES.cpp
+	GPU/GLES/DepalettizeShaderGLES.h
+	GPU/GLES/DepthBufferGLES.cpp
 	GPU/GLES/GPU_GLES.cpp
 	GPU/GLES/GPU_GLES.h
-	GPU/GLES/GLStateCache.cpp
-	GPU/GLES/GLStateCache.h
-	GPU/GLES/FragmentShaderGenerator.cpp
-	GPU/GLES/FragmentShaderGenerator.h
-	GPU/GLES/FragmentTestCache.cpp
-	GPU/GLES/FragmentTestCache.h
-	GPU/GLES/Framebuffer.cpp
-	GPU/GLES/Framebuffer.h
-	GPU/GLES/ShaderManager.cpp
-	GPU/GLES/ShaderManager.h
-	GPU/GLES/StateMapping.cpp
-	GPU/GLES/StateMapping.h
-	GPU/GLES/StencilBuffer.cpp
-	GPU/GLES/TextureCache.cpp
-	GPU/GLES/TextureCache.h
-	GPU/GLES/TextureScaler.cpp
-	GPU/GLES/TextureScaler.h
+	GPU/GLES/FragmentTestCacheGLES.cpp
+	GPU/GLES/FragmentTestCacheGLES.h
+	GPU/GLES/FramebufferManagerGLES.cpp
+	GPU/GLES/FramebufferManagerGLES.h
+	GPU/GLES/ShaderManagerGLES.cpp
+	GPU/GLES/ShaderManagerGLES.h
+	GPU/GLES/StateMappingGLES.cpp
+	GPU/GLES/StateMappingGLES.h
+	GPU/GLES/StencilBufferGLES.cpp
+	GPU/GLES/TextureCacheGLES.cpp
+	GPU/GLES/TextureCacheGLES.h
+	GPU/GLES/TextureScalerGLES.cpp
+	GPU/GLES/TextureScalerGLES.h
 	GPU/GLES/DrawEngineGLES.cpp
 	GPU/GLES/DrawEngineGLES.h
-	GPU/GLES/VertexShaderGenerator.cpp
-	GPU/GLES/VertexShaderGenerator.h
 )
 
 set(GPU_VULKAN
-  GPU/Vulkan/DepalettizeShaderVulkan.cpp
+	GPU/Vulkan/DepalettizeShaderVulkan.cpp
 	GPU/Vulkan/DepalettizeShaderVulkan.h
+	GPU/Vulkan/DebugVisVulkan.cpp
+	GPU/Vulkan/DebugVisVulkan.h
 	GPU/Vulkan/DrawEngineVulkan.cpp
 	GPU/Vulkan/DrawEngineVulkan.h
-	GPU/Vulkan/FragmentShaderGeneratorVulkan.cpp
-	GPU/Vulkan/FragmentShaderGeneratorVulkan.h
-	GPU/Vulkan/FramebufferVulkan.cpp
-	GPU/Vulkan/FramebufferVulkan.h
+	GPU/Vulkan/FramebufferManagerVulkan.cpp
+	GPU/Vulkan/FramebufferManagerVulkan.h
 	GPU/Vulkan/GPU_Vulkan.cpp
 	GPU/Vulkan/GPU_Vulkan.h
 	GPU/Vulkan/PipelineManagerVulkan.cpp
@@ -1104,25 +1294,22 @@ set(GPU_VULKAN
 	GPU/Vulkan/ShaderManagerVulkan.h
 	GPU/Vulkan/StateMappingVulkan.cpp
 	GPU/Vulkan/StateMappingVulkan.h
+	GPU/Vulkan/StencilBufferVulkan.cpp
 	GPU/Vulkan/TextureCacheVulkan.cpp
 	GPU/Vulkan/TextureCacheVulkan.h
 	GPU/Vulkan/TextureScalerVulkan.cpp
 	GPU/Vulkan/TextureScalerVulkan.h
-	GPU/Vulkan/VertexShaderGeneratorVulkan.cpp
-	GPU/Vulkan/VertexShaderGeneratorVulkan.h
 	GPU/Vulkan/VulkanUtil.cpp
 	GPU/Vulkan/VulkanUtil.h
 )
 
 set(GPU_D3D9
-  GPU/Directx9/DepalettizeShaderDX9.cpp
+	GPU/Directx9/DepalettizeShaderDX9.cpp
 	GPU/Directx9/DepalettizeShaderDX9.h
 	GPU/Directx9/DrawEngineDX9.cpp
 	GPU/Directx9/DrawEngineDX9.h
-	GPU/Directx9/PixelShaderGeneratorDX9.cpp
-	GPU/Directx9/PixelShaderGeneratorDX9.h
-	GPU/Directx9/FramebufferDX9.cpp
-	GPU/Directx9/FramebufferDX9.h
+	GPU/Directx9/FramebufferManagerDX9.cpp
+	GPU/Directx9/FramebufferManagerDX9.h
 	GPU/Directx9/GPU_DX9.cpp
 	GPU/Directx9/GPU_DX9.h
 	GPU/Directx9/ShaderManagerDX9.cpp
@@ -1134,23 +1321,34 @@ set(GPU_D3D9
 	GPU/Directx9/TextureCacheDX9.h
 	GPU/Directx9/TextureScalerDX9.cpp
 	GPU/Directx9/TextureScalerDX9.h
-	GPU/Directx9/VertexShaderGeneratorDX9.cpp
-	GPU/Directx9/VertexShaderGeneratorDX9.h
-	GPU/Directx9/helper/dx_fbo.cpp
-	GPU/Directx9/helper/dx_fbo.h
-	GPU/Directx9/helper/dx_state.cpp
-	GPU/Directx9/helper/dx_state.h
-	GPU/Directx9/helper/global.cpp
-	GPU/Directx9/helper/global.h
 )
 
+set(GPU_D3D11
+	GPU/D3D11/DepalettizeShaderD3D11.cpp
+	GPU/D3D11/DepalettizeShaderD3D11.h
+	GPU/D3D11/DrawEngineD3D11.cpp
+	GPU/D3D11/DrawEngineD3D11.h
+	GPU/D3D11/FramebufferManagerD3D11.cpp
+	GPU/D3D11/FramebufferManagerD3D11.h
+	GPU/D3D11/GPU_D3D11.cpp
+	GPU/D3D11/GPU_D3D11.h
+	GPU/D3D11/D3D11Util.cpp
+	GPU/D3D11/D3D11Util.h
+	GPU/D3D11/ShaderManagerD3D11.cpp
+	GPU/D3D11/ShaderManagerD3D11.h
+	GPU/D3D11/StateMappingD3D11.cpp
+	GPU/D3D11/StateMappingD3D11.h
+	GPU/D3D11/StencilBufferD3D11.cpp
+	GPU/D3D11/TextureCacheD3D11.cpp
+	GPU/D3D11/TextureCacheD3D11.h
+	GPU/D3D11/TextureScalerD3D11.cpp
+	GPU/D3D11/TextureScalerD3D11.h
+)
 
-set(GPU_IMPLS ${GPU_GLES})
-if(VULKAN)
-  set(GPU_IMPLS ${GPU_IMPLS} ${GPU_VULKAN})
-endif()
+# We build Vulkan even on Apple to avoid annoying build differences.
+set(GPU_IMPLS ${GPU_GLES} ${GPU_VULKAN})
 if(WIN32)
-	list(APPEND GPU_IMPLS ${GPU_D3D9})
+	list(APPEND GPU_IMPLS ${GPU_D3D9} ${GPU_D3D11})
 endif()
 
 if(ARMV7 OR ARM64)
@@ -1161,18 +1359,32 @@ set(GPU_SOURCES
 	${GPU_NEON}
 	GPU/Common/DepalettizeShaderCommon.cpp
 	GPU/Common/DepalettizeShaderCommon.h
-	GPU/Common/FramebufferCommon.cpp
-	GPU/Common/FramebufferCommon.h
+	GPU/Common/FragmentShaderGenerator.cpp
+	GPU/Common/FragmentShaderGenerator.h
+	GPU/Common/VertexShaderGenerator.cpp
+	GPU/Common/VertexShaderGenerator.h
+	GPU/Common/FramebufferManagerCommon.cpp
+	GPU/Common/FramebufferManagerCommon.h
 	GPU/Common/GPUDebugInterface.cpp
 	GPU/Common/GPUDebugInterface.h
 	GPU/Common/GPUStateUtils.cpp
 	GPU/Common/GPUStateUtils.h
 	GPU/Common/DrawEngineCommon.cpp
 	GPU/Common/DrawEngineCommon.h
+	GPU/Common/PresentationCommon.cpp
+	GPU/Common/PresentationCommon.h
+	GPU/Common/ReinterpretFramebuffer.cpp
+	GPU/Common/ReinterpretFramebuffer.h
 	GPU/Common/ShaderId.cpp
 	GPU/Common/ShaderId.h
+	GPU/Common/ShaderUniforms.cpp
+	GPU/Common/ShaderUniforms.h
+	GPU/Common/ShaderCommon.cpp
+	GPU/Common/ShaderCommon.h
 	GPU/Common/SplineCommon.cpp
 	GPU/Common/SplineCommon.h
+	GPU/Common/StencilCommon.cpp
+	GPU/Common/StencilCommon.h
 	GPU/Common/SoftwareTransformCommon.cpp
 	GPU/Common/SoftwareTransformCommon.h
 	GPU/Common/VertexDecoderCommon.cpp
@@ -1192,8 +1404,17 @@ set(GPU_SOURCES
 	GPU/Common/SplineCommon.h
 	GPU/Debugger/Breakpoints.cpp
 	GPU/Debugger/Breakpoints.h
+	GPU/Debugger/Debugger.cpp
+	GPU/Debugger/Debugger.h
+	GPU/Debugger/Playback.cpp
+	GPU/Debugger/Playback.h
+	GPU/Debugger/Record.cpp
+	GPU/Debugger/Record.h
+	GPU/Debugger/RecordFormat.h
 	GPU/Debugger/Stepping.cpp
 	GPU/Debugger/Stepping.h
+	GPU/ge_constants.h
+	GPU/GeConstants.cpp
 	GPU/GPUInterface.h
 	GPU/GeDisasm.cpp
 	GPU/GeDisasm.h
@@ -1205,19 +1426,22 @@ set(GPU_SOURCES
 	GPU/GPUState.h
 	GPU/Math3D.cpp
 	GPU/Math3D.h
-	GPU/Null/NullGpu.cpp
-	GPU/Null/NullGpu.h
 	GPU/Software/Clipper.cpp
 	GPU/Software/Clipper.h
 	GPU/Software/Lighting.cpp
 	GPU/Software/Lighting.h
 	GPU/Software/Rasterizer.cpp
 	GPU/Software/Rasterizer.h
+	GPU/Software/RasterizerRectangle.cpp
+	GPU/Software/RasterizerRectangle.h
+	GPU/Software/Sampler.cpp
+	GPU/Software/Sampler.h
 	GPU/Software/SoftGpu.cpp
 	GPU/Software/SoftGpu.h
 	GPU/Software/TransformUnit.cpp
 	GPU/Software/TransformUnit.h
-	GPU/ge_constants.h)
+	GPU/ge_constants.h
+)
 
 # 'ppsspp_jni' on ANDROID, 'Core' everywhere else
 # SHARED on ANDROID, STATIC everywhere else
@@ -1225,6 +1449,7 @@ add_library(${CoreLibName} ${CoreLinkType}
 	${CoreExtra}
 	Core/Config.cpp
 	Core/Config.h
+	Core/ConfigValues.h
 	Core/Core.cpp
 	Core/Core.h
 	Core/Compatibility.cpp
@@ -1236,14 +1461,54 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/CwCheat.h
 	Core/HDRemaster.cpp
 	Core/HDRemaster.h
+	Core/Instance.cpp
+	Core/Instance.h
+	Core/KeyMap.cpp
+	Core/KeyMap.h
 	Core/ThreadEventQueue.h
+	Core/WebServer.cpp
+	Core/WebServer.h
 	Core/Debugger/Breakpoints.cpp
 	Core/Debugger/Breakpoints.h
 	Core/Debugger/DebugInterface.h
+	Core/Debugger/MemBlockInfo.cpp
+	Core/Debugger/MemBlockInfo.h
 	Core/Debugger/SymbolMap.cpp
 	Core/Debugger/SymbolMap.h
 	Core/Debugger/DisassemblyManager.cpp
 	Core/Debugger/DisassemblyManager.h
+	Core/Debugger/WebSocket.cpp
+	Core/Debugger/WebSocket.h
+	Core/Debugger/WebSocket/BreakpointSubscriber.cpp
+	Core/Debugger/WebSocket/BreakpointSubscriber.h
+	Core/Debugger/WebSocket/CPUCoreSubscriber.cpp
+	Core/Debugger/WebSocket/CPUCoreSubscriber.h
+	Core/Debugger/WebSocket/DisasmSubscriber.cpp
+	Core/Debugger/WebSocket/DisasmSubscriber.h
+	Core/Debugger/WebSocket/GameBroadcaster.cpp
+	Core/Debugger/WebSocket/GameBroadcaster.h
+	Core/Debugger/WebSocket/GameSubscriber.cpp
+	Core/Debugger/WebSocket/GameSubscriber.h
+	Core/Debugger/WebSocket/GPUBufferSubscriber.cpp
+	Core/Debugger/WebSocket/GPUBufferSubscriber.h
+	Core/Debugger/WebSocket/GPURecordSubscriber.cpp
+	Core/Debugger/WebSocket/GPURecordSubscriber.h
+	Core/Debugger/WebSocket/HLESubscriber.cpp
+	Core/Debugger/WebSocket/HLESubscriber.h
+	Core/Debugger/WebSocket/InputBroadcaster.cpp
+	Core/Debugger/WebSocket/InputBroadcaster.h
+	Core/Debugger/WebSocket/InputSubscriber.cpp
+	Core/Debugger/WebSocket/InputSubscriber.h
+	Core/Debugger/WebSocket/LogBroadcaster.cpp
+	Core/Debugger/WebSocket/LogBroadcaster.h
+	Core/Debugger/WebSocket/MemorySubscriber.cpp
+	Core/Debugger/WebSocket/MemorySubscriber.h
+	Core/Debugger/WebSocket/SteppingBroadcaster.cpp
+	Core/Debugger/WebSocket/SteppingBroadcaster.h
+	Core/Debugger/WebSocket/SteppingSubscriber.cpp
+	Core/Debugger/WebSocket/SteppingSubscriber.h
+	Core/Debugger/WebSocket/WebSocketUtils.cpp
+	Core/Debugger/WebSocket/WebSocketUtils.h
 	Core/Dialog/PSPDialog.cpp
 	Core/Dialog/PSPDialog.h
 	Core/Dialog/PSPGamedataInstallDialog.cpp
@@ -1272,6 +1537,8 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/ELF/ParamSFO.cpp
 	Core/ELF/ParamSFO.h
 	Core/FileSystems/tlzrc.cpp
+	Core/FileSystems/BlobFileSystem.cpp
+	Core/FileSystems/BlobFileSystem.h
 	Core/FileSystems/BlockDevices.cpp
 	Core/FileSystems/BlockDevices.h
 	Core/FileSystems/DirectoryFileSystem.cpp
@@ -1298,6 +1565,8 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/HLE/KernelWaitHelpers.h
 	Core/HLE/KUBridge.h
 	Core/HLE/KUBridge.cpp
+	Core/HLE/Plugins.h
+	Core/HLE/Plugins.cpp
 	Core/HLE/ThreadQueueList.h
 	Core/HLE/__sceAudio.cpp
 	Core/HLE/__sceAudio.h
@@ -1349,6 +1618,8 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/HLE/sceKernelAlarm.h
 	Core/HLE/sceKernelEventFlag.cpp
 	Core/HLE/sceKernelEventFlag.h
+	Core/HLE/sceKernelHeap.cpp
+	Core/HLE/sceKernelHeap.h
 	Core/HLE/sceKernelInterrupt.cpp
 	Core/HLE/sceKernelInterrupt.h
 	Core/HLE/sceKernelMbx.cpp
@@ -1413,8 +1684,14 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/HLE/sceUmd.h
 	Core/HLE/sceUsb.cpp
 	Core/HLE/sceUsb.h
+	Core/HLE/sceUsbAcc.cpp
+	Core/HLE/sceUsbAcc.h
+	Core/HLE/sceUsbCam.cpp
+	Core/HLE/sceUsbCam.h
 	Core/HLE/sceUsbGps.cpp
 	Core/HLE/sceUsbGps.h
+	Core/HLE/sceUsbMic.cpp
+	Core/HLE/sceUsbMic.h
 	Core/HLE/sceUtility.cpp
 	Core/HLE/sceUtility.h
 	Core/HLE/sceVaudio.cpp
@@ -1429,6 +1706,10 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/HW/SimpleAudioDec.h
 	Core/HW/AsyncIOManager.cpp
 	Core/HW/AsyncIOManager.h
+	Core/HW/BufferQueue.cpp
+	Core/HW/BufferQueue.h
+	Core/HW/Camera.cpp
+	Core/HW/Camera.h
 	Core/HW/MediaEngine.cpp
 	Core/HW/MediaEngine.h
 	Core/HW/MpegDemux.cpp
@@ -1487,6 +1768,8 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/MIPS/MIPSVFPUUtils.h
 	Core/MIPS/MIPSAsm.cpp
 	Core/MIPS/MIPSAsm.h
+	Core/MemFault.cpp
+	Core/MemFault.h
 	Core/MemMap.cpp
 	Core/MemMap.h
 	Core/MemMapFunctions.cpp
@@ -1495,6 +1778,8 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/PSPLoaders.h
 	Core/Reporting.cpp
 	Core/Reporting.h
+	Core/Replay.cpp
+	Core/Replay.h
 	Core/SaveState.cpp
 	Core/SaveState.h
 	Core/Screenshot.cpp
@@ -1503,60 +1788,168 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/System.h
 	Core/TextureReplacer.cpp
 	Core/TextureReplacer.h
+	Core/ThreadPools.cpp
+	Core/ThreadPools.h
 	Core/Util/AudioFormat.cpp
 	Core/Util/AudioFormat.h
+	Core/Util/AudioFormatNEON.cpp
+	Core/Util/AudioFormatNEON.h
 	Core/Util/GameManager.cpp
 	Core/Util/GameManager.h
+	Core/Util/PortManager.cpp
+	Core/Util/PortManager.h
 	Core/Util/BlockAllocator.cpp
 	Core/Util/BlockAllocator.h
 	Core/Util/PPGeDraw.cpp
 	Core/Util/PPGeDraw.h
-	Core/Util/ppge_atlas.cpp
-	Core/Util/ppge_atlas.h
 	${CORE_NEON}
 	${GPU_SOURCES}
-	Globals.h
-	git-version.cpp
 	ext/disarm.cpp
-	git-version.cpp)
+	git-version.cpp
+)
 
 if(ANDROID)
-  set(CoreExtraLibs ${CoreExtraLibs} android)
-  if(X86_64)
-    set(CoreExtraLibs -Wl,--gc-sections -Wl,--exclude-libs,ALL)
-  endif()
-endif()	
+	set(CoreExtraLibs ${CoreExtraLibs} android)
+	if(X86_64)
+		set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-Bsymbolic")
+	endif()
+endif()
 
-target_link_libraries(${CoreLibName} Common native kirk cityhash sfmt19937 xbrz xxhash glslang
+set(CoreExtraLibs ${CoreExtraLibs} armips)
+
+# needed for VK_USE_PLATFORM_XCB_KHR only
+#if(VULKAN AND NOT WIN32)
+#	target_link_libraries(native X11-xcb X11)
+#endif()
+
+set(GlslangLibs glslang OGLCompiler OSDependent SPIRV spirv-cross-glsl)
+
+if (ENABLE_SPVREMAPPER)
+	list(APPEND GlslangLibs SPVRemapper)
+endif()
+
+if(WIN32)
+	set(GlslangLibs ${GlslangLibs} spirv-cross-hlsl)
+endif()
+
+target_link_libraries(${CoreLibName} Common native kirk cityhash sfmt19937 xbrz xxhash ${GlslangLibs}
 	${CoreExtraLibs} ${OPENGL_LIBRARIES} ${X11_LIBRARIES} ${CMAKE_DL_LIBS})
 
 if(FFmpeg_FOUND)
-  target_compile_definitions(${CoreLibName} PRIVATE USE_FFMPEG=1)
-  target_link_libraries(${CoreLibName}
-    FFmpeg::avcodec
-    FFmpeg::avformat
-    FFmpeg::avutil
-    FFmpeg::swresample
-    FFmpeg::swscale
-  )
+	target_compile_definitions(${CoreLibName} PRIVATE USE_FFMPEG=1)
+	target_link_libraries(${CoreLibName}
+		FFmpeg::avcodec
+		FFmpeg::avformat
+		FFmpeg::avutil
+		FFmpeg::swresample
+		FFmpeg::swscale
+		${ZLIB_LIBRARY}
+	)
+endif()
+
+# Discord integration
+if(USE_DISCORD AND NOT IOS AND NOT LIBRETRO)
+	add_definitions(-DUSE_DISCORD=1)
+	target_link_libraries(${CoreLibName} discord-rpc)
+endif()
+
+# miniUPnPc integration (MiniUPnPc supposed to works on any POSIX system, not sure if some of these are redundant/not needed tho)
+if(USE_MINIUPNPC)
+	set (MINIUPNPC_VERSION 2.1) # used by miniupnpcstrings.h.cmake
+	set (MINIUPNPC_API_VERSION 17)
+	option(UPNPC_BUILD_STATIC "Build static library" TRUE)
+	option(NO_GETADDRINFO "Define NO_GETADDRINFO" FALSE)
+	mark_as_advanced(NO_GETADDRINFO)
+	if (NO_GETADDRINFO)
+	  add_definitions(-DNO_GETADDRINFO)
+	endif()
+	
+	if (NOT WIN32)
+	  add_definitions (-DMINIUPNPC_SET_SOCKET_TIMEOUT)
+	  add_definitions (-D_BSD_SOURCE -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200112L)
+	endif()
+	if (MACOSX)
+	  add_definitions (-D_DARWIN_C_SOURCE)
+	endif()
+	if(WIN32)
+		add_definitions(-DWIN32 -DMINIUPNP_EXPORTS )
+	else()
+		add_definitions(-fPIC)
+	endif()
+	
+	add_definitions(-DWITH_UPNP -DMINIUPNP_STATICLIB)
+	set(MINIUPNP_DIR "ext/miniupnp/miniupnpc")
+	include_directories(${CMAKE_CURRENT_BINARY_DIR})
+	configure_file(${MINIUPNP_DIR}/miniupnpcstrings.h.cmake ${CMAKE_CURRENT_BINARY_DIR}/miniupnpcstrings.h) # by default miniupnp repo doesn't contains miniupnpcstrings.h and need to be generated
+	set(MINIUPNPC_SOURCES
+        # the needed bits of miniupnpc (no python module, no tests, no cli)
+		${MINIUPNP_DIR}/connecthostport.c
+        ${MINIUPNP_DIR}/igd_desc_parse.c
+        ${MINIUPNP_DIR}/minisoap.c
+        ${MINIUPNP_DIR}/minissdpc.c
+        ${MINIUPNP_DIR}/miniupnpc.c
+        ${MINIUPNP_DIR}/miniwget.c
+        ${MINIUPNP_DIR}/minixml.c
+        ${MINIUPNP_DIR}/minixmlvalid.c
+		${MINIUPNP_DIR}/portlistingparse.c
+		${MINIUPNP_DIR}/receivedata.c
+		#${MINIUPNP_DIR}/upnpc.c # causing an error due to already existing _main()
+        ${MINIUPNP_DIR}/upnpcommands.c
+		${MINIUPNP_DIR}/upnpdev.c
+        ${MINIUPNP_DIR}/upnperrors.c
+        ${MINIUPNP_DIR}/upnpreplyparse.c
+		${CMAKE_CURRENT_BINARY_DIR}/miniupnpcstrings.h
+	)
+	if (NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "AmigaOS")
+	  #set(MINIUPNPC_SOURCES ${MINIUPNPC_SOURCES} minissdpc.c) # causing an error due to duplication in MINIUPNPC_SOURCES?
+	endif()
+	if (WIN32)
+	  set_source_files_properties(${MINIUPNPC_SOURCES} PROPERTIES  COMPILE_DEFINITIONS "MINIUPNP_STATICLIB;MINIUPNP_EXPORTS")
+	  set(LDLIBS ws2_32 iphlpapi ${LDLIBS})
+	#elseif (CMAKE_SYSTEM_NAME STREQUAL "Solaris")
+	#  find_library (SOCKET_LIBRARY NAMES socket)
+	#  find_library (NSL_LIBRARY NAMES nsl)
+	#  find_library (RESOLV_LIBRARY NAMES resolv)
+	#  set (LDLIBS ${SOCKET_LIBRARY} ${NSL_LIBRARY} ${RESOLV_LIBRARY} ${LDLIBS})
+	endif()
+	if (UPNPC_BUILD_STATIC)
+		add_library(miniupnpc STATIC ${MINIUPNPC_SOURCES})
+		target_link_libraries(${CoreLibName} miniupnpc ${LDLIBS})
+		set(UPNPC_LIBRARY miniupnpc)
+		if (MSVC)
+			# Suppress noise warnings
+			target_compile_definitions(miniupnpc PRIVATE _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
+		endif()
+	endif()
 endif()
 
 setup_target_project(${CoreLibName} Core)
 
-# Generate git-version.cpp at build time.
-add_custom_target(GitVersion ALL
-	DEPENDS something_that_never_exists)
+# Generate git-version at build time.
+add_custom_target(GitVersion DEPENDS something_that_never_exists)
+
+set(WIN_VERSION_CMD "")
+if (WIN32)
+	set(WIN_VERSION_CMD COMMAND ${CMAKE_SOURCE_DIR}/Windows/git-version-gen.cmd PPSSPPWindows)
+endif()
+
 add_custom_command(OUTPUT something_that_never_exists
 	COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-		-P ${CMAKE_CURRENT_SOURCE_DIR}/git-version.cmake)
+		-P ${CMAKE_CURRENT_SOURCE_DIR}/git-version.cmake
+	${WIN_VERSION_CMD})
 
 set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/git-version.cpp
-	PROPERTIES GENERATED TRUE)
+	PROPERTIES GENERATED TRUE
+	SKIP_AUTOMOC ON)
 add_dependencies(${CoreLibName} GitVersion)
 
 set(WindowsFiles
 	Windows/DSoundStream.cpp
 	Windows/DSoundStream.h
+	Windows/WindowsAudio.cpp
+	Windows/WindowsAudio.h
+	Windows/WASAPIStream.cpp
+	Windows/WASAPIStream.h
 	Windows/Debugger/CPURegsInterface.h
 	Windows/Debugger/BreakpointWindow.cpp
 	Windows/Debugger/BreakpointWindow.h
@@ -1568,7 +1961,6 @@ set(WindowsFiles
 	Windows/Debugger/CtrlMemView.h
 	Windows/Debugger/CtrlRegisterList.cpp
 	Windows/Debugger/CtrlRegisterList.h
-	Windows/Debugger/Debugger.h
 	Windows/Debugger/DebuggerShared.cpp
 	Windows/Debugger/DebuggerShared.h
 	Windows/Debugger/Debugger_Disasm.cpp
@@ -1577,8 +1969,6 @@ set(WindowsFiles
 	Windows/Debugger/Debugger_MemoryDlg.h
 	Windows/Debugger/Debugger_Lists.cpp
 	Windows/Debugger/Debugger_Lists.h
-	Windows/Debugger/Debugger_Misc.cpp
-	Windows/Debugger/Debugger_Misc.h
 	Windows/Debugger/Debugger_SymbolMap.h
 	Windows/Debugger/Debugger_VFPUDlg.cpp
 	Windows/Debugger/Debugger_VFPUDlg.h
@@ -1596,6 +1986,9 @@ set(WindowsFiles
 	Windows/GEDebugger/GEDebugger.h
 	Windows/GEDebugger/TabDisplayLists.h
 	Windows/GEDebugger/TabVertices.h
+	Windows/BufferLock.h
+	Windows/CaptureDevice.cpp
+	Windows/CaptureDevice.h
 	Windows/DinputDevice.cpp
 	Windows/DinputDevice.h
 	Windows/DSoundStream.cpp
@@ -1603,17 +1996,16 @@ set(WindowsFiles
 	Windows/EmuThread.cpp
 	Windows/EmuThread.h
 	Windows/GeDebugger/GeDebugger.cpp
-	Windows/Globals.cpp
 	Windows/GPU/D3D9Context.cpp
 	Windows/GPU/D3D9Context.h
+	Windows/GPU/D3D11Context.cpp
+	Windows/GPU/D3D11Context.h
 	Windows/GPU/WindowsGLContext.cpp
 	Windows/GPU/WindowsVulkanContext.cpp
 	Windows/InputBox.cpp
 	Windows/InputBox.h
 	Windows/InputDevice.cpp
 	Windows/InputDevice.h
-	Windows/KeyboardDevice.cpp
-	Windows/KeyboardDevice.h
 	Windows/W32Util/DialogManager.cpp
 	Windows/W32Util/DialogManager.h
 	Windows/W32Util/Misc.cpp
@@ -1644,41 +2036,79 @@ set(WindowsFiles
 	Windows/ppsspp.rc
 	Windows/resource.h
 	Windows/stdafx.cpp
-	Windows/stdafx.h)
+	Windows/stdafx.h
+)
 
 list(APPEND LinkCommon ${CoreLibName} ${CMAKE_THREAD_LIBS_INIT})
 
 if(WIN32)
-	list(APPEND LinkCommon kernel32 user32 gdi32 shell32 comctl32 dsound xinput armips)
+	list(APPEND LinkCommon kernel32 user32 gdi32 shell32 comctl32 dsound xinput d3d9 winmm dinput8 ole32 winspool ksuser mf mfplat mfreadwrite mfuuid shlwapi)
 	#setup_target_project(${TargetBin} Windows)
 	list(APPEND NativeAppSource ${WindowsFiles})
 endif()
 
 set(NativeAssets
 	android/assets/ui_atlas.zim
+	android/assets/ui_atlas.meta
 	assets/lang
 	assets/shaders
-	assets/ppge_atlas.zim
+	assets/Roboto-Condensed.ttf
+	assets/7z.png
 	assets/compat.ini
-	assets/langregion.ini
 	assets/gamecontrollerdb.txt
-	assets/unknown.png)
+	assets/langregion.ini
+	assets/ppge_atlas.zim
+	assets/ppge_atlas.meta
+	assets/rargray.png
+	assets/unknown.png
+	assets/zip.png
+	assets/sfx_back.wav
+	assets/sfx_confirm.wav
+	assets/sfx_select.wav
+	assets/sfx_toggle_off.wav
+	assets/sfx_toggle_on.wav
+	source_assets/image/logo.png
+	source_assets/image/icon_regular_72.png
+)
 
 
 if(HEADLESS)
-	add_executable(PPSSPPHeadless
+	set(HeadlessSource
 		headless/Headless.cpp
+		headless/StubHost.cpp
 		headless/StubHost.h
 		headless/Compare.cpp
-		headless/Compare.h)
-	target_link_libraries(PPSSPPHeadless
-		${COCOA_LIBRARY} ${LinkCommon})
+		headless/Compare.h
+		headless/SDLHeadlessHost.cpp
+		headless/SDLHeadlessHost.h
+	)
+	if(WIN32)
+		list(APPEND HeadlessSource
+			headless/WindowsHeadlessHost.cpp
+			headless/WindowsHeadlessHost.h
+			Windows/GPU/D3D9Context.cpp
+			Windows/GPU/D3D9Context.h
+			Windows/GPU/D3D11Context.cpp
+			Windows/GPU/D3D11Context.h
+			Windows/GPU/WindowsGLContext.cpp
+			Windows/GPU/WindowsVulkanContext.cpp
+			Windows/W32Util/ShellUtil.cpp
+			Windows/W32Util/ShellUtil.h
+			Windows/CaptureDevice.cpp
+			Windows/CaptureDevice.h
+			Windows/W32Util/Misc.cpp
+			Windows/W32Util/Misc.h
+		)
+	endif()
+	add_executable(PPSSPPHeadless ${HeadlessSource})
+	target_link_libraries(PPSSPPHeadless ${COCOA_LIBRARY} ${QUARTZ_CORE_LIBRARY} ${LinkCommon})
 	setup_target_project(PPSSPPHeadless headless)
 endif()
 
 if(UNITTEST)
 	add_executable(unitTest
 		unittest/UnitTest.cpp
+		unittest/TestShaderGenerators.cpp
 		unittest/TestArmEmitter.cpp
 		unittest/TestArm64Emitter.cpp
 		unittest/TestX64Emitter.cpp
@@ -1687,37 +2117,69 @@ if(UNITTEST)
 		Core/MIPS/ARM/ArmRegCache.cpp
 		Core/MIPS/ARM/ArmRegCacheFPU.cpp
 	)
-	target_link_libraries(unitTest
-		${COCOA_LIBRARY} ${LinkCommon} Common)
+	target_link_libraries(unitTest ${COCOA_LIBRARY} ${QUARTZ_CORE_LIBRARY} ${LinkCommon} Common)
 	setup_target_project(unitTest unittest)
+	add_test(arm64_emitter unitTest Arm64Emitter)
+	add_test(arm_emitter unitTest ArmEmitter)
+	add_test(x64_emitter unitTest X64Emitter)
+	add_test(vertex_jit unitTest VertexJit)
+	add_test(asin unitTest Asin)
+	add_test(sincos unitTest SinCos)
+	add_test(vfpu_sincos unitTest VFPUSinCos)
+	add_test(math_util unitTest MathUtil)
+	add_test(parsers unitTest Parsers)
+	add_test(jit unitTest Jit)
+	add_test(matrix_transpose unitTest MatrixTranspose)
+	add_test(parse_lbn unitTest ParseLBN)
+	add_test(quick_texhash unitTest QuickTexHash)
+	add_test(clz unitTest CLZ)
+	add_test(shadergen unitTest ShaderGenerators)
 endif()
 
-if (TargetBin)
-	if (IOS OR APPLE)
-		if (APPLE AND NOT IOS)
-		set(ICON_PATH_ABS ${CMAKE_CURRENT_SOURCE_DIR}/icons/ppsspp.icns)
-		set( MACOSX_BUNDLE_ICON_FILE ppsspp.icns )
-		set_source_files_properties(${ICON_PATH_ABS} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+if(LIBRETRO)
+	add_subdirectory(libretro)
+endif()
+
+if(TargetBin)
+	if(APPLE)
+		if(NOT IOS)
+			set(ICON_PATH_ABS ${CMAKE_CURRENT_SOURCE_DIR}/icons/ppsspp.icns)
+			set(MACOSX_BUNDLE_ICON_FILE ppsspp.icns)
+			set_source_files_properties(${ICON_PATH_ABS} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
 		endif()
 
 		# TODO: there must a native way to copy these.
 		# Now this is very prone to errors when changes occur.
 		# Also better to have assets under Resources dir for OS X.
-		file(GLOB_RECURSE FLASH0_FILES flash0/*)
+		file(GLOB_RECURSE FLASH0_FILES assets/flash0/*)
 		file(GLOB_RECURSE LANG_FILES assets/lang/*)
 		file(GLOB_RECURSE SHADER_FILES assets/shaders/*)
 
-		if (APPLE AND NOT IOS)
-		set_source_files_properties(${NativeAssets} PROPERTIES MACOSX_PACKAGE_LOCATION "MacOS/assets")
-		set_source_files_properties(${FLASH0_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION "MacOS/assets/flash0/font")
-		set_source_files_properties(${LANG_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION "MacOS/assets/lang")
-		set_source_files_properties(${SHADER_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION "MacOS/assets/shaders")
+		if(NOT IOS)
+			set_source_files_properties(${NativeAssets} PROPERTIES MACOSX_PACKAGE_LOCATION "MacOS/assets")
+			set_source_files_properties(${FLASH0_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION "MacOS/assets/flash0/font")
+			set_source_files_properties(${LANG_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION "MacOS/assets/lang")
+			set_source_files_properties(${SHADER_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION "MacOS/assets/shaders")
 		endif()
 
-		add_executable(${TargetBin} MACOSX_BUNDLE ${ICON_PATH_ABS} ${NativeAssets} ${SHADER_FILES} ${FLASH0_FILES} ${LANG_FILES} ${NativeAppSource})
+		if(IOS)
+			add_executable(${TargetBin} MACOSX_BUNDLE ${ICON_PATH_ABS} ${NativeAssets} ${SHADER_FILES} ${FLASH0_FILES} ${LANG_FILES} ${NativeAppSource} "ios/Settings.bundle" "ios/Launch Screen.storyboard" "MoltenVK/iOS/Frameworks")
+		else()
+			add_executable(${TargetBin} MACOSX_BUNDLE ${ICON_PATH_ABS} ${NativeAssets} ${SHADER_FILES} ${FLASH0_FILES} ${LANG_FILES} ${NativeAppSource})
+			file(INSTALL "${CMAKE_SOURCE_DIR}/MoltenVK/macOS/Frameworks/libMoltenVK.dylib" DESTINATION "${CMAKE_BINARY_DIR}/PPSSPPSDL.app/Contents/Frameworks/")
+			if(TARGET SDL2::SDL2 AND NOT USING_QT_UI)
+				add_custom_command(TARGET ${TargetBin} POST_BUILD COMMAND /bin/bash "${CMAKE_SOURCE_DIR}/SDL/macbundle.sh" "${CMAKE_BINARY_DIR}/PPSSPPSDL.app")
+			elseif(USING_QT_UI)
+				add_custom_command(TARGET ${TargetBin} POST_BUILD COMMAND /bin/bash "${CMAKE_SOURCE_DIR}/Qt/macbundle.sh" "${CMAKE_BINARY_DIR}/PPSSPPQt.app")
+			endif()
+		endif()
 	elseif(WIN32)
-		add_executable(${TargetBin} WIN ${NativeAppSource})
-		set_target_properties(${TargetBin} PROPERTIES LINK_FLAGS "/SUBSYSTEM:WINDOWS")
+		add_executable(${TargetBin} WIN32 ${NativeAppSource})
+		if(MSVC)
+			set_target_properties(${TargetBin} PROPERTIES LINK_FLAGS "/SUBSYSTEM:WINDOWS")
+		else()
+			set_target_properties(${TargetBin} PROPERTIES LINK_FLAGS "-Wl,-subsystem,windows")
+		endif()
 		set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${TargetBin})
 	else()
 		add_executable(${TargetBin} ${NativeAppSource})
@@ -1726,38 +2188,79 @@ if (TargetBin)
 endif()
 
 # installs
-file(INSTALL ${NativeAssets} DESTINATION assets)
-file(INSTALL flash0 DESTINATION assets)
-
+if(NOT ANDROID)
+	file(INSTALL ${NativeAssets} DESTINATION assets)
+	file(INSTALL assets/flash0 DESTINATION assets)
+endif()
 # packaging and code signing
 if(IOS)
+	set(DEPLOYMENT_TARGET 8.0)
 	file(GLOB IOSAssets ios/assets/*.png)
 	list(REMOVE_ITEM IOSAssets ${CMAKE_CURRENT_SOURCE_DIR}/ios/assets/Default-568h@2x.png)
 	list(REMOVE_ITEM IOSAssets ${CMAKE_CURRENT_SOURCE_DIR}/ios/assets/Default-568h@3x.png)
 	file(INSTALL ${IOSAssets} DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/assets)
 	file(GLOB IOSAssets ios/assets/Default-568h@*.png)
 	file(INSTALL ${IOSAssets} DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-	if (IOS_DEBUG)
+	if(IOS_DEBUG)
 		file(INSTALL pspautotests DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/assets)
 	endif()
 	set(RSRC_XIB_FILES assets/Icon@2x.png)
+	set(RSRC_XIB_FILES "Launch Screen.storyboard")
 	set_source_files_properties(${RSRC_XIB_FILES}
 		PROPERTIES MACOSX_PACKAGE_LOCATION Resources
 	)
-    if(CMAKE_GENERATOR STREQUAL "Xcode")
-	  set(APP_DIR_NAME "$(TARGET_BUILD_DIR)/$(FULL_PRODUCT_NAME)")
-    else()
-      set(APP_DIR_NAME "$<TARGET_FILE_DIR:PPSSPP>")
-    endif()
+	#This breaks in modern XCode. Not sure when it worked...
+	#if(CMAKE_GENERATOR STREQUAL "Xcode")
+	#	set(APP_DIR_NAME "$(TARGET_BUILD_DIR)/$(FULL_PRODUCT_NAME)")
+	#else()
+		set(APP_DIR_NAME "$<TARGET_FILE_DIR:PPSSPP>")
+	#endif()
 	add_custom_command(TARGET PPSSPP POST_BUILD
-        COMMAND mkdir -p ${APP_DIR_NAME}
-		COMMAND tar -c -C ${CMAKE_CURRENT_BINARY_DIR} --exclude .DS_Store --exclude .git assets *.png | tar -x -C ${APP_DIR_NAME}
+		COMMAND mkdir -p \"${APP_DIR_NAME}\"
+		COMMAND tar -c -C ${CMAKE_CURRENT_BINARY_DIR} --exclude .DS_Store --exclude .git assets *.png | tar -x -C \"${APP_DIR_NAME}\"
+		COMMAND /bin/bash "${CMAKE_SOURCE_DIR}/ios/macbundle.sh" \"${APP_DIR_NAME}\"
 	)
+	set(MACOSX_DEPLOYMENT_TARGET ${DEPLOYMENT_TARGET})
 	set_target_properties(${TargetBin} PROPERTIES
 		MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/ios/PPSSPP-Info.plist"
+		RESOURCE "ios/Launch Screen.storyboard"
+		RESOURCE "ios/Settings.bundle"
+		RESOURCE "MoltenVK/iOS/Frameworks"
+		XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET ${DEPLOYMENT_TARGET}
 		XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "iPhone/iPad"
-        XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
-        XCODE_ATTRIBUTE_ENABLE_BITCODE NO
-        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "-"
+		XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
+		XCODE_ATTRIBUTE_ENABLE_BITCODE NO
+		XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "-"
+	)
+endif()
+
+if(UNIX AND NOT ANDROID AND NOT APPLE)
+	configure_file(
+		"${CMAKE_SOURCE_DIR}/ppsspp.desktop.in"
+		"${CMAKE_BINARY_DIR}/ppsspp.desktop"
+		@ONLY
+	)
+	install(
+		TARGETS ${TargetBin}
+		DESTINATION "${CMAKE_INSTALL_BINDIR}"
+	)
+	install(
+		DIRECTORY "${CMAKE_BINARY_DIR}/assets"
+		DESTINATION "${CMAKE_INSTALL_DATADIR}/ppsspp"
+		PATTERN ".git*" EXCLUDE
+	)
+	install(
+		FILES "${CMAKE_BINARY_DIR}/ppsspp.desktop"
+		DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications"
+		RENAME ${TargetBin}.desktop
+	)
+	install(
+		DIRECTORY "${CMAKE_SOURCE_DIR}/icons/hicolor"
+		DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons"
+	)
+	install(
+		FILES "${CMAKE_SOURCE_DIR}/icons/icon-512.svg"
+		DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/pixmaps"
+		RENAME ppsspp.svg
 	)
 endif()

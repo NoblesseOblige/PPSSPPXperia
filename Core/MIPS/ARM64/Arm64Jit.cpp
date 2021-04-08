@@ -18,9 +18,10 @@
 #include "ppsspp_config.h"
 #if PPSSPP_ARCH(ARM64)
 
-#include "base/logging.h"
-#include "profiler/profiler.h"
-#include "Common/ChunkFile.h"
+#include "Common/Profiler/Profiler.h"
+#include "Common/Log.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
 #include "Common/CPUDetect.h"
 #include "Common/StringUtils.h"
 
@@ -28,6 +29,7 @@
 #include "Core/Config.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
+#include "Core/Debugger/Breakpoints.h"
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/MemMap.h"
 
@@ -44,20 +46,47 @@
 
 using namespace Arm64JitConstants;
 
-void DisassembleArm64Print(const u8 *data, int size) {
+static void DisassembleArm64Print(const u8 *data, int size) {
 	std::vector<std::string> lines = DisassembleArm64(data, size);
 	for (auto s : lines) {
-		ILOG("%s", s.c_str());
+		INFO_LOG(JIT, "%s", s.c_str());
 	}
 	/*
-	ILOG("+++");
+	INFO_LOG(JIT, "+++");
 	// A format friendly to Online Disassembler which gets endianness wrong
 	for (size_t i = 0; i < lines.size(); i++) {
 		uint32_t opcode = ((const uint32_t *)data)[i];
-		ILOG("%d/%d: %08x", (int)(i+1), (int)lines.size(), swap32(opcode));
+		INFO_LOG(JIT, "%d/%d: %08x", (int)(i+1), (int)lines.size(), swap32(opcode));
 	}
-	ILOG("===");
-	ILOG("===");*/
+	INFO_LOG(JIT, "===");
+	INFO_LOG(JIT, "===");*/
+}
+
+static u32 JitBreakpoint() {
+	// Should we skip this breakpoint?
+	if (CBreakPoints::CheckSkipFirst() == currentMIPS->pc)
+		return 0;
+
+	BreakAction result = CBreakPoints::ExecBreakPoint(currentMIPS->pc);
+	if ((result & BREAK_ACTION_PAUSE) == 0)
+		return 0;
+
+	return 1;
+}
+
+static u32 JitMemCheck(u32 pc) {
+	if (CBreakPoints::CheckSkipFirst() == currentMIPS->pc)
+		return 0;
+
+	// Note: pc may be the delay slot.
+	const auto op = Memory::Read_Instruction(pc, true);
+	s32 offset = (s16)(op & 0xFFFF);
+	if (MIPSGetInfo(op) & IS_VFPU)
+		offset &= 0xFFFC;
+	u32 addr = currentMIPS->r[MIPS_GET_RS(op)] + offset;
+
+	CBreakPoints::ExecOpMemCheck(addr, pc);
+	return coreState == CORE_RUNNING || coreState == CORE_NEXTFRAME ? 0 : 1;
 }
 
 namespace MIPSComp
@@ -65,7 +94,16 @@ namespace MIPSComp
 using namespace Arm64Gen;
 using namespace Arm64JitConstants;
 
-Arm64Jit::Arm64Jit(MIPSState *mips) : blocks(mips, this), gpr(mips, &js, &jo), fpr(mips, &js, &jo), mips_(mips), fp(this) { 
+Arm64Jit::Arm64Jit(MIPSState *mipsState) : blocks(mipsState, this), gpr(mipsState, &js, &jo), fpr(mipsState, &js, &jo), mips_(mipsState), fp(this) {
+	// Automatically disable incompatible options.
+	if (((intptr_t)Memory::base & 0x00000000FFFFFFFFUL) != 0) {
+		jo.enablePointerify = false;
+	}
+
+#ifdef MASKED_PSP_MEMORY
+	jo.enablePointerify = false;
+#endif
+
 	logBlocks = 0;
 	dontLogBlocks = 0;
 	blocks.Init();
@@ -74,7 +112,11 @@ Arm64Jit::Arm64Jit(MIPSState *mips) : blocks(mips, this), gpr(mips, &js, &jo), f
 	AllocCodeSpace(1024 * 1024 * 16);  // 32MB is the absolute max because that's what an ARM branch instruction can reach, backwards and forwards.
 	GenerateFixedCode(jo);
 	js.startDefaultPrefix = mips_->HasDefaultPrefix();
-	js.currentRoundingFunc = convertS0ToSCRATCH1[0];
+	js.currentRoundingFunc = convertS0ToSCRATCH1[mips_->fcr31 & 3];
+
+	// The debugger sets this so that "go" on a breakpoint will actually... go.
+	// But if they reset, we can end up hitting it by mistake, since it's based on PC and ticks.
+	CBreakPoints::SetSkipFirst(0);
 }
 
 Arm64Jit::~Arm64Jit() {
@@ -85,35 +127,26 @@ void Arm64Jit::DoState(PointerWrap &p) {
 	if (!s)
 		return;
 
-	p.Do(js.startDefaultPrefix);
+	Do(p, js.startDefaultPrefix);
 	if (s >= 2) {
-		p.Do(js.hasSetRounding);
+		Do(p, js.hasSetRounding);
 		js.lastSetRounding = 0;
 	} else {
 		js.hasSetRounding = 1;
 	}
 
-	if (p.GetMode() == PointerWrap::MODE_READ) {
-		js.currentRoundingFunc = convertS0ToSCRATCH1[(mips_->fcr31) & 3];
-	}
+	// Note: we can't update the currentRoundingFunc here because fcr31 wasn't loaded yet.
+
+	// The debugger sets this so that "go" on a breakpoint will actually... go.
+	// But if they reset, we can end up hitting it by mistake, since it's based on PC and ticks.
+	CBreakPoints::SetSkipFirst(0);
 }
 
-// This is here so the savestate matches between jit and non-jit.
-void Arm64Jit::DoDummyState(PointerWrap &p) {
-	auto s = p.Section("Jit", 1, 2);
-	if (!s)
-		return;
-
-	bool dummy = false;
-	p.Do(dummy);
-	if (s >= 2) {
-		dummy = true;
-		p.Do(dummy);
-	}
+void Arm64Jit::UpdateFCR31() {
+	js.currentRoundingFunc = convertS0ToSCRATCH1[mips_->fcr31 & 3];
 }
 
-void Arm64Jit::FlushAll()
-{
+void Arm64Jit::FlushAll() {
 	gpr.FlushAll();
 	fpr.FlushAll();
 	FlushPrefixV();
@@ -140,14 +173,10 @@ void Arm64Jit::FlushPrefixV() {
 }
 
 void Arm64Jit::ClearCache() {
-	ILOG("ARM64Jit: Clearing the cache!");
+	INFO_LOG(JIT, "ARM64Jit: Clearing the cache!");
 	blocks.Clear();
-	ClearCodeSpace();
-	GenerateFixedCode(jo);
-}
-
-void Arm64Jit::InvalidateCache() {
-	blocks.Clear();
+	ClearCodeSpace(jitStartOffset);
+	FlushIcacheSection(region + jitStartOffset, region + region_size - jitStartOffset);
 }
 
 void Arm64Jit::InvalidateCacheAt(u32 em_address, int length) {
@@ -163,12 +192,16 @@ void Arm64Jit::EatInstruction(MIPSOpcode op) {
 		ERROR_LOG_REPORT_ONCE(ateInDelaySlot, JIT, "Ate an instruction inside a delay slot.");
 	}
 
+	CheckJitBreakpoint(GetCompilerPC() + 4, 0);
 	js.numInstructions++;
 	js.compilerPC += 4;
 	js.downcountAmount += MIPSGetInstructionCycleEstimate(op);
 }
 
 void Arm64Jit::CompileDelaySlot(int flags) {
+	// Need to offset the downcount which was already incremented for the branch + delay slot.
+	CheckJitBreakpoint(GetCompilerPC() + 4, -2);
+
 	// preserve flag around the delay slot! Maybe this is not always necessary on ARM where 
 	// we can (mostly) control whether we set the flag or not. Of course, if someone puts an slt in to the
 	// delay slot, we're screwed.
@@ -190,11 +223,11 @@ void Arm64Jit::CompileDelaySlot(int flags) {
 void Arm64Jit::Compile(u32 em_address) {
 	PROFILE_THIS_SCOPE("jitc");
 	if (GetSpaceLeft() < 0x10000 || blocks.IsFull()) {
-		INFO_LOG(JIT, "Space left: %i", GetSpaceLeft());
+		INFO_LOG(JIT, "Space left: %d", (int)GetSpaceLeft());
 		ClearCache();
 	}
 
-	BeginWrite();
+	BeginWrite(4);
 
 	int block_num = blocks.AllocateBlock(em_address);
 	JitBlock *b = blocks.GetBlock(block_num);
@@ -202,6 +235,9 @@ void Arm64Jit::Compile(u32 em_address) {
 	blocks.FinalizeBlock(block_num, jo.enableBlocklink);
 
 	EndWrite();
+
+	// Don't forget to zap the newly written instructions in the instruction cache!
+	FlushIcache();
 
 	bool cleanSlate = false;
 
@@ -214,7 +250,7 @@ void Arm64Jit::Compile(u32 em_address) {
 
 	// Drat.  The VFPU hit an uneaten prefix at the end of a block.
 	if (js.startDefaultPrefix && js.MayHavePrefix()) {
-		WARN_LOG(JIT, "An uneaten prefix at end of block: %08x", GetCompilerPC() - 4);
+		WARN_LOG_REPORT(JIT, "An uneaten prefix at end of block: %08x", GetCompilerPC() - 4);
 		js.LogPrefix();
 
 		// Let's try that one more time.  We won't get back here because we toggled the value.
@@ -269,13 +305,13 @@ const u8 *Arm64Jit::DoJit(u32 em_address, JitBlock *b) {
 		const u8 *backJump = GetCodePtr();
 		MOVI2R(SCRATCH1, js.blockStart);
 		B((const void *)outerLoopPCInSCRATCH1);
-		b->checkedEntry = (u8 *)GetCodePtr();
+		b->checkedEntry = GetCodePtr();
 		B(CC_LT, backJump);
 	} else if (jo.useForwardJump) {
-		b->checkedEntry = (u8 *)GetCodePtr();
+		b->checkedEntry = GetCodePtr();
 		bail = B(CC_LT);
 	} else if (jo.enableBlocklink) {
-		b->checkedEntry = (u8 *)GetCodePtr();
+		b->checkedEntry = GetCodePtr();
 		MOVI2R(SCRATCH1, js.blockStart);
 		FixupBranch skip = B(CC_GE);
 		B((const void *)outerLoopPCInSCRATCH1);
@@ -294,14 +330,24 @@ const u8 *Arm64Jit::DoJit(u32 em_address, JitBlock *b) {
 	js.numInstructions = 0;
 	while (js.compiling) {
 		gpr.SetCompilerPC(GetCompilerPC());  // Let it know for log messages
+		// Jit breakpoints are quite fast, so let's do them in release too.
+		CheckJitBreakpoint(GetCompilerPC(), 0);
+
 		MIPSOpcode inst = Memory::Read_Opcode_JIT(GetCompilerPC());
-	
 		js.downcountAmount += MIPSGetInstructionCycleEstimate(inst);
 
 		MIPSCompileOp(inst, this);
 	
 		js.compilerPC += 4;
 		js.numInstructions++;
+
+		if (jo.Disabled(JitDisable::REGALLOC_GPR)) {
+			gpr.FlushAll();
+		}
+		if (jo.Disabled(JitDisable::REGALLOC_FPR)) {
+			fpr.FlushAll();
+			FlushPrefixV();
+		}
 
 		// Safety check, in case we get a bunch of really large jit ops without a lot of branching.
 		if (GetSpaceLeft() < 0x800 || js.numInstructions >= JitBlockCache::MAX_BLOCK_INSTRUCTIONS) {
@@ -319,25 +365,22 @@ const u8 *Arm64Jit::DoJit(u32 em_address, JitBlock *b) {
 
 	char temp[256];
 	if (logBlocks > 0 && dontLogBlocks == 0) {
-		ILOG("=============== mips %d ===============", blocks.GetNumBlocks());
+		INFO_LOG(JIT, "=============== mips %d ===============", blocks.GetNumBlocks());
 		for (u32 cpc = em_address; cpc != GetCompilerPC() + 4; cpc += 4) {
 			MIPSDisAsm(Memory::Read_Opcode_JIT(cpc), cpc, temp, true);
-			ILOG("M: %08x   %s", cpc, temp);
+			INFO_LOG(JIT, "M: %08x   %s", cpc, temp);
 		}
 	}
 
 	b->codeSize = GetCodePtr() - b->normalEntry;
 	if (logBlocks > 0 && dontLogBlocks == 0) {
-		ILOG("=============== ARM (%d instructions -> %d bytes) ===============", js.numInstructions, b->codeSize);
+		INFO_LOG(JIT, "=============== ARM (%d instructions -> %d bytes) ===============", js.numInstructions, b->codeSize);
 		DisassembleArm64Print(b->normalEntry, GetCodePtr() - b->normalEntry);
 	}
 	if (logBlocks > 0)
 		logBlocks--;
 	if (dontLogBlocks > 0)
 		dontLogBlocks--;
-
-	// Don't forget to zap the newly written instructions in the instruction cache!
-	FlushIcache();
 
 	if (js.lastContinuedPC == 0) {
 		b->originalSize = js.numInstructions;
@@ -404,9 +447,9 @@ void Arm64Jit::LinkBlock(u8 *exitPoint, const u8 *checkedEntry) {
 	if (PlatformIsWXExclusive()) {
 		ProtectMemoryPages(exitPoint, 32, MEM_PROT_READ | MEM_PROT_WRITE);
 	}
-	ARM64XEmitter emit(exitPoint);
+	ARM64XEmitter emit(GetCodePtrFromWritablePtr(exitPoint), exitPoint);
 	emit.B(checkedEntry);
-	// TODO: Write stuff after.
+	// TODO: Write stuff after, convering up the now-unused instructions.
 	emit.FlushIcache();
 	if (PlatformIsWXExclusive()) {
 		ProtectMemoryPages(exitPoint, 32, MEM_PROT_READ | MEM_PROT_EXEC);
@@ -421,7 +464,7 @@ void Arm64Jit::UnlinkBlock(u8 *checkedEntry, u32 originalAddress) {
 		ProtectMemoryPages(checkedEntry, 16, MEM_PROT_READ | MEM_PROT_WRITE);
 	}
 
-	ARM64XEmitter emit(checkedEntry);
+	ARM64XEmitter emit(GetCodePtrFromWritablePtr(checkedEntry), checkedEntry);
 	emit.MOVI2R(SCRATCH1, originalAddress);
 	emit.STR(INDEX_UNSIGNED, SCRATCH1, CTXREG, offsetof(MIPSState, pc));
 	emit.B(MIPSComp::jit->GetDispatcher());
@@ -433,7 +476,7 @@ void Arm64Jit::UnlinkBlock(u8 *checkedEntry, u32 originalAddress) {
 }
 
 bool Arm64Jit::ReplaceJalTo(u32 dest) {
-#ifdef ARM64
+#if PPSSPP_ARCH(ARM64)
 	const ReplacementTableEntry *entry = nullptr;
 	u32 funcSize = 0;
 	if (!CanReplaceJalTo(dest, &entry, &funcSize)) {
@@ -485,7 +528,18 @@ void Arm64Jit::Comp_ReplacementFunc(MIPSOpcode op)
 		return;
 	}
 
-	if (entry->flags & REPFLAG_DISABLED) {
+	u32 funcSize = g_symbolMap->GetFunctionSize(GetCompilerPC());
+	bool disabled = (entry->flags & REPFLAG_DISABLED) != 0;
+	if (!disabled && funcSize != SymbolMap::INVALID_ADDRESS && funcSize > sizeof(u32)) {
+		// We don't need to disable hooks, the code will still run.
+		if ((entry->flags & (REPFLAG_HOOKENTER | REPFLAG_HOOKEXIT)) == 0) {
+			// Any breakpoint at the func entry was already tripped, so we can still run the replacement.
+			// That's a common case - just to see how often the replacement hits.
+			disabled = CBreakPoints::RangeContainsBreakPoint(GetCompilerPC() + sizeof(u32), funcSize - sizeof(u32));
+		}
+	}
+
+	if (disabled) {
 		MIPSCompileOp(Memory::Read_Instruction(GetCompilerPC(), true), this);
 	} else if (entry->jitReplaceFunc) {
 		MIPSReplaceFunc repl = entry->jitReplaceFunc;
@@ -614,7 +668,12 @@ void Arm64Jit::ApplyRoundingMode(bool force) {
 }
 
 // Destroys SCRATCH1 and SCRATCH2
-void Arm64Jit::UpdateRoundingMode() {
+void Arm64Jit::UpdateRoundingMode(u32 fcr31) {
+	// We must set js.hasSetRounding at compile time, or this block will use the wrong rounding mode.
+	// The fcr31 parameter is -1 when not known at compile time, so we just assume it was changed.
+	if (fcr31 & 0x01000003) {
+		js.hasSetRounding = true;
+	}
 	QuickCallFunction(SCRATCH2_64, updateRoundingMode);
 }
 
@@ -623,6 +682,7 @@ void Arm64Jit::UpdateRoundingMode() {
 // though, as we need to have the SUBS flag set in the end. So with block linking in the mix,
 // I don't think this gives us that much benefit.
 void Arm64Jit::WriteExit(u32 destination, int exit_num) {
+	// TODO: Check destination is valid and trigger exception.
 	WriteDownCount(); 
 	//If nobody has taken care of this yet (this can be removed when all branches are done)
 	JitBlock *b = js.curBlock;
@@ -642,6 +702,7 @@ void Arm64Jit::WriteExit(u32 destination, int exit_num) {
 }
 
 void Arm64Jit::WriteExitDestInR(ARM64Reg Reg) {
+	// TODO: If not fast memory, check for invalid address in reg and trigger exception.
 	MovToPC(Reg);
 	WriteDownCount();
 	// TODO: shouldn't need an indirect branch here...
@@ -651,6 +712,60 @@ void Arm64Jit::WriteExitDestInR(ARM64Reg Reg) {
 void Arm64Jit::WriteSyscallExit() {
 	WriteDownCount();
 	B((const void *)dispatcherCheckCoreState);
+}
+
+bool Arm64Jit::CheckJitBreakpoint(u32 addr, int downcountOffset) {
+	if (CBreakPoints::IsAddressBreakPoint(addr)) {
+		MRS(FLAGTEMPREG, FIELD_NZCV);
+		FlushAll();
+		MOVI2R(SCRATCH1, GetCompilerPC());
+		MovToPC(SCRATCH1);
+		RestoreRoundingMode();
+		QuickCallFunction(SCRATCH1_64, &JitBreakpoint);
+
+		// If 0, the conditional breakpoint wasn't taken.
+		CMPI2R(W0, 0);
+		FixupBranch skip = B(CC_EQ);
+		WriteDownCount(downcountOffset);
+		ApplyRoundingMode();
+		B((const void *)dispatcherCheckCoreState);
+		SetJumpTarget(skip);
+
+		ApplyRoundingMode();
+		_MSR(FIELD_NZCV, FLAGTEMPREG);
+		return true;
+	}
+
+	return false;
+}
+
+bool Arm64Jit::CheckMemoryBreakpoint(int instructionOffset) {
+	if (CBreakPoints::HasMemChecks()) {
+		int off = instructionOffset + (js.inDelaySlot ? 1 : 0);
+
+		MRS(FLAGTEMPREG, FIELD_NZCV);
+		FlushAll();
+		RestoreRoundingMode();
+		MOVI2R(W0, GetCompilerPC());
+		MovToPC(W0);
+		if (off != 0)
+			ADDI2R(W0, W0, off * 4);
+		QuickCallFunction(SCRATCH2_64, &JitMemCheck);
+
+		// If 0, the breakpoint wasn't tripped.
+		CMPI2R(W0, 0);
+		FixupBranch skip = B(CC_EQ);
+		WriteDownCount(-1 - off);
+		ApplyRoundingMode();
+		B((const void *)dispatcherCheckCoreState);
+		SetJumpTarget(skip);
+
+		ApplyRoundingMode();
+		_MSR(FIELD_NZCV, FLAGTEMPREG);
+		return true;
+	}
+
+	return false;
 }
 
 void Arm64Jit::Comp_DoNothing(MIPSOpcode op) { }

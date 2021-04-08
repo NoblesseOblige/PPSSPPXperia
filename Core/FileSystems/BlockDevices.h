@@ -23,14 +23,14 @@
 // The ISOFileSystemReader reads from a BlockDevice, so it automatically works
 // with CISO images.
 
+#include <mutex>
+
 #include "Common/CommonTypes.h"
 #include "Core/ELF/PBPReader.h"
-#include "base/mutex.h"
 
 class FileLoader;
 
-class BlockDevice
-{
+class BlockDevice {
 public:
 	virtual ~BlockDevice() {}
 	virtual bool ReadBlock(int blockNumber, u8 *outPtr, bool uncached = false) = 0;
@@ -45,19 +45,23 @@ public:
 	}
 	int GetBlockSize() const { return 2048;}  // forced, it cannot be changed by subclasses
 	virtual u32 GetNumBlocks() = 0;
+	virtual bool IsDisc() = 0;
 
-	u32 CalculateCRC();
+	u32 CalculateCRC(volatile bool *cancel = nullptr);
+	void NotifyReadError();
+
+protected:
+	bool reportedError_ = false;
 };
 
-
-class CISOFileBlockDevice : public BlockDevice
-{
+class CISOFileBlockDevice : public BlockDevice {
 public:
 	CISOFileBlockDevice(FileLoader *fileLoader);
 	~CISOFileBlockDevice();
 	bool ReadBlock(int blockNumber, u8 *outPtr, bool uncached = false) override;
 	bool ReadBlocks(u32 minBlock, int count, u8 *outPtr) override;
 	u32 GetNumBlocks() override { return numBlocks; }
+	bool IsDisc() override { return true; }
 
 private:
 	FileLoader *fileLoader_;
@@ -70,17 +74,18 @@ private:
 	u32 frameSize;
 	u32 numBlocks;
 	u32 numFrames;
+	int ver_;
 };
 
 
-class FileBlockDevice : public BlockDevice
-{
+class FileBlockDevice : public BlockDevice {
 public:
 	FileBlockDevice(FileLoader *fileLoader);
 	~FileBlockDevice();
 	bool ReadBlock(int blockNumber, u8 *outPtr, bool uncached = false) override;
 	bool ReadBlocks(u32 minBlock, int count, u8 *outPtr) override;
 	u32 GetNumBlocks() override {return (u32)(filesize_ / GetBlockSize());}
+	bool IsDisc() override { return true; }
 
 private:
 	FileLoader *fileLoader_;
@@ -98,18 +103,18 @@ struct table_info {
 	int unk_1c;
 };
 
-class NPDRMDemoBlockDevice : public BlockDevice
-{
+class NPDRMDemoBlockDevice : public BlockDevice {
 public:
 	NPDRMDemoBlockDevice(FileLoader *fileLoader);
 	~NPDRMDemoBlockDevice();
 
 	bool ReadBlock(int blockNumber, u8 *outPtr, bool uncached = false) override;
 	u32 GetNumBlocks() override {return (u32)lbaSize;}
+	bool IsDisc() override { return false; }
 
 private:
 	FileLoader *fileLoader_;
-	static recursive_mutex mutex_;
+	static std::mutex mutex_;
 	u32 lbaSize;
 
 	u32 psarOffset;

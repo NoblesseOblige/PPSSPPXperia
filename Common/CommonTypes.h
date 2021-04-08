@@ -22,15 +22,7 @@
 
 #pragma once
 
-struct u24_be {
-	unsigned char value[3]; 
-
-	operator unsigned int(){
-		return 0x00000000 | (value[0] << 16) | (value[1] << 8) | (value[2] << 0);
-	}
-};
-
-#ifdef _WIN32
+#if defined(_MSC_VER)
 
 typedef unsigned __int8 u8;
 typedef unsigned __int16 u16;

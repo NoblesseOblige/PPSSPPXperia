@@ -17,27 +17,34 @@
 
 #pragma once
 
+#include <mutex>
 #include "Common/CommonTypes.h"
 #include "Core/Loaders.h"
+#ifdef _WIN32
+typedef void *HANDLE;
+#endif
 
 class LocalFileLoader : public FileLoader {
 public:
 	LocalFileLoader(const std::string &filename);
+	LocalFileLoader(const int fd, const std::string &filename);
 	virtual ~LocalFileLoader();
 
 	virtual bool Exists() override;
 	virtual bool IsDirectory() override;
 	virtual s64 FileSize() override;
 	virtual std::string Path() const override;
-
-	virtual void Seek(s64 absolutePos) override;
-	virtual size_t Read(size_t bytes, size_t count, void *data, Flags flags = Flags::NONE) override;
 	virtual size_t ReadAt(s64 absolutePos, size_t bytes, size_t count, void *data, Flags flags = Flags::NONE) override;
 
 private:
-	// First only used by Android, but we can keep it here for everyone.
+#ifndef _WIN32
+	void DetectSizeFd();
 	int fd_;
-	FILE *f_;
+#else
+	HANDLE handle_;
+#endif
 	u64 filesize_;
 	std::string filename_;
+	std::mutex readLock_;
+	bool isOpenedByFd_;
 };

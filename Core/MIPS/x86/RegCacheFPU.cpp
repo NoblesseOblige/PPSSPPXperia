@@ -19,7 +19,7 @@
 #if PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)
 
 #include <cstring>
-#include <xmmintrin.h>
+#include <emmintrin.h>
 
 #include "Common/Log.h"
 #include "Common/x64Emitter.h"
@@ -31,17 +31,13 @@
 using namespace Gen;
 using namespace X64JitConstants;
 
-float FPURegCache::tempValues[NUM_TEMPS];
-
-FPURegCache::FPURegCache() : mips(0), initialReady(false), emit(0) {
-	memset(regs, 0, sizeof(regs));
-	memset(xregs, 0, sizeof(xregs));
+FPURegCache::FPURegCache() {
 	vregs = regs + 32;
 }
 
-void FPURegCache::Start(MIPSState *mips, MIPSComp::JitState *js, MIPSComp::JitOptions *jo, MIPSAnalyst::AnalysisResults &stats) {
-	this->mips = mips;
-
+void FPURegCache::Start(MIPSState *mipsState, MIPSComp::JitState *js, MIPSComp::JitOptions *jo, MIPSAnalyst::AnalysisResults &stats, bool useRip) {
+	mips_ = mipsState;
+	useRip_ = useRip;
 	if (!initialReady) {
 		SetupInitialRegs();
 		initialReady = true;
@@ -113,15 +109,10 @@ void FPURegCache::ReduceSpillLockV(const u8 *vec, VectorSize sz) {
 
 void FPURegCache::FlushRemap(int oldreg, int newreg) {
 	OpArg oldLocation = regs[oldreg].location;
-	if (!oldLocation.IsSimpleReg()) {
-		PanicAlert("FlushRemap: Must already be in an x86 SSE register");
-	}
-	if (regs[oldreg].lane != 0) {
-		PanicAlert("FlushRemap only supports FPR registers");
-	}
+	_assert_msg_(oldLocation.IsSimpleReg(), "FlushRemap: Must already be in an x86 SSE register");
+	_assert_msg_(regs[oldreg].lane == 0, "FlushRemap only supports FPR registers");
 
 	X64Reg xr = oldLocation.GetSimpleReg();
-
 	if (oldreg == newreg) {
 		xregs[xr].dirty = true;
 		return;
@@ -201,7 +192,7 @@ bool FPURegCache::IsMappedVS(const u8 *v, VectorSize vsz) {
 void FPURegCache::MapRegsVS(const u8 *r, VectorSize vsz, int flags) {
 	const int n = GetNumVectorElements(vsz);
 
-	_dbg_assert_msg_(JIT, jo_->enableVFPUSIMD, "Should not map simd regs when option is off.");
+	_dbg_assert_msg_(jo_->enableVFPUSIMD, "Should not map simd regs when option is off.");
 
 	if (!TryMapRegsVS(r, vsz, flags)) {
 		// TODO: Could be more optimal.
@@ -209,7 +200,7 @@ void FPURegCache::MapRegsVS(const u8 *r, VectorSize vsz, int flags) {
 			StoreFromRegisterV(r[i]);
 		}
 		if (!TryMapRegsVS(r, vsz, flags)) {
-			_dbg_assert_msg_(JIT, false, "MapRegsVS() failed on second try.");
+			_dbg_assert_msg_(false, "MapRegsVS() failed on second try.");
 		}
 	}
 }
@@ -225,8 +216,8 @@ bool FPURegCache::CanMapVS(const u8 *v, VectorSize vsz) {
 		return true;
 	} else if (vregs[v[0]].lane != 0) {
 		const MIPSCachedFPReg &v0 = vregs[v[0]];
-		_dbg_assert_msg_(JIT, v0.away, "Must be away when lane != 0");
-		_dbg_assert_msg_(JIT, v0.location.IsSimpleReg(), "Must be is register when lane != 0");
+		_dbg_assert_msg_(v0.away, "Must be away when lane != 0");
+		_dbg_assert_msg_(v0.location.IsSimpleReg(), "Must be is register when lane != 0");
 
 		// Already in a different simd set.
 		return false;
@@ -247,7 +238,7 @@ bool FPURegCache::CanMapVS(const u8 *v, VectorSize vsz) {
 		if (vregs[v[i]].locked) {
 			return false;
 		}
-		_assert_msg_(JIT, !vregs[v[i]].location.IsImm(), "Cannot handle imms in fp cache.");
+		_assert_msg_(!vregs[v[i]].location.IsImm(), "Cannot handle imms in fp cache.");
 	}
 
 	return true;
@@ -333,7 +324,7 @@ X64Reg FPURegCache::LoadRegsVS(const u8 *v, int n) {
 	X64Reg xrs[4] = {INVALID_REG, INVALID_REG, INVALID_REG, INVALID_REG};
 	bool xrsLoaded[4] = {false, false, false, false};
 
-	_dbg_assert_msg_(JIT, n >= 2 && n <= 4, "LoadRegsVS is only implemented for simd loads.");
+	_dbg_assert_msg_(n >= 2 && n <= 4, "LoadRegsVS is only implemented for simd loads.");
 
 	for (int i = 0; i < n; ++i) {
 		const MIPSCachedFPReg &mr = vregs[v[i]];
@@ -347,7 +338,7 @@ X64Reg FPURegCache::LoadRegsVS(const u8 *v, int n) {
 				++regsLoaded;
 				++regsAvail;
 			} else if (mr.lane != 0) {
-				_dbg_assert_msg_(JIT, false, "LoadRegsVS is not able to handle simd remapping yet, store first.");
+				_dbg_assert_msg_(false, "LoadRegsVS is not able to handle simd remapping yet, store first.");
 			}
 		}
 	}
@@ -388,8 +379,8 @@ X64Reg FPURegCache::LoadRegsVS(const u8 *v, int n) {
 	// TODO: Not handling the case of some regs avail and some loaded right now.
 	if (regsAvail < n && (sequential != n || regsLoaded == n || regsAvail == 0)) {
 		regsAvail = GetFreeXRegs(xrs, 2, true);
-		_dbg_assert_msg_(JIT, regsAvail >= 2, "Ran out of fp regs for loading simd regs with.");
-		_dbg_assert_msg_(JIT, xrs[0] != xrs[1], "Regs for simd load are the same, bad things await.");
+		_dbg_assert_msg_(regsAvail >= 2, "Ran out of fp regs for loading simd regs with.");
+		_dbg_assert_msg_(xrs[0] != xrs[1], "Regs for simd load are the same, bad things await.");
 		// We spilled, so we assume that all our regs are screwed up now anyway.
 		for (int i = 0; i < 4; ++i) {
 			xrsLoaded[i] = false;
@@ -416,7 +407,7 @@ X64Reg FPURegCache::LoadRegsVS(const u8 *v, int n) {
 				break;
 			}
 		}
-		const float *f = v[0] < 128 ? &mips->v[voffset[v[0]]] : &tempValues[v[0] - 128];
+		const float *f = v[0] < 128 ? &mips_->v[voffset[v[0]]] : &mips_->tempValues[v[0] - 128];
 		if (((intptr_t)f & 0x7) == 0 && n == 2) {
 			emit->MOVQ_xmm(res, vregs[v[0]].location);
 		} else if (((intptr_t)f & 0xf) == 0) {
@@ -450,7 +441,7 @@ X64Reg FPURegCache::LoadRegsVS(const u8 *v, int n) {
 		}
 		res = xrs[0];
 	} else {
-		_dbg_assert_msg_(JIT, n > 2, "2 should not be possible here.");
+		_dbg_assert_msg_(n > 2, "2 should not be possible here.");
 
 		// Available regs are less than n, and some may be loaded.
 		// Let's grab the most optimal unloaded ones.
@@ -515,8 +506,8 @@ bool FPURegCache::TryMapDirtyInVS(const u8 *vd, VectorSize vdsz, const u8 *vs, V
 	ReleaseSpillLockV(vs, vssz);
 	ReleaseSpillLockV(vd, vdsz);
 
-	_dbg_assert_msg_(JIT, !success || IsMappedVS(vd, vdsz), "vd should be mapped now");
-	_dbg_assert_msg_(JIT, !success || IsMappedVS(vs, vssz), "vs should be mapped now");
+	_dbg_assert_msg_(!success || IsMappedVS(vd, vdsz), "vd should be mapped now");
+	_dbg_assert_msg_(!success || IsMappedVS(vs, vssz), "vs should be mapped now");
 
 	return success;
 }
@@ -540,9 +531,9 @@ bool FPURegCache::TryMapDirtyInInVS(const u8 *vd, VectorSize vdsz, const u8 *vs,
 	ReleaseSpillLockV(vs, vssz);
 	ReleaseSpillLockV(vt, vtsz);
 
-	_dbg_assert_msg_(JIT, !success || IsMappedVS(vd, vdsz), "vd should be mapped now");
-	_dbg_assert_msg_(JIT, !success || IsMappedVS(vs, vssz), "vs should be mapped now");
-	_dbg_assert_msg_(JIT, !success || IsMappedVS(vt, vtsz), "vt should be mapped now");
+	_dbg_assert_msg_(!success || IsMappedVS(vd, vdsz), "vd should be mapped now");
+	_dbg_assert_msg_(!success || IsMappedVS(vs, vssz), "vs should be mapped now");
+	_dbg_assert_msg_(!success || IsMappedVS(vt, vtsz), "vt should be mapped now");
 
 	return success;
 }
@@ -587,7 +578,7 @@ void FPURegCache::SimpleRegV(const u8 v, int flags) {
 		if (flags & MAP_DIRTY) {
 			xregs[VX(v)].dirty = true;
 		}
-		_assert_msg_(JIT, vr.location.IsSimpleReg(), "not loaded and not simple.");
+		_assert_msg_(vr.location.IsSimpleReg(), "not loaded and not simple.");
 	}
 	Invariant();
 }
@@ -599,26 +590,23 @@ void FPURegCache::ReleaseSpillLock(int mipsreg) {
 void FPURegCache::ReleaseSpillLocks() {
 	for (int i = 0; i < NUM_MIPS_FPRS; i++)
 		regs[i].locked = 0;
-	for (int i = TEMP0; i < TEMP0 + NUM_TEMPS; ++i)
+	for (int i = TEMP0; i < TEMP0 + NUM_X86_FPU_TEMPS; ++i)
 		DiscardR(i);
 }
 
 void FPURegCache::MapReg(const int i, bool doLoad, bool makeDirty) {
 	pendingFlush = true;
-	_assert_msg_(JIT, !regs[i].location.IsImm(), "WTF - FPURegCache::MapReg - imm");
-	_assert_msg_(JIT, i >= 0 && i < NUM_MIPS_FPRS, "WTF - FPURegCache::MapReg - invalid mips reg %d", i);
+	_assert_msg_(!regs[i].location.IsImm(), "WTF - FPURegCache::MapReg - imm");
+	_assert_msg_(i >= 0 && i < NUM_MIPS_FPRS, "WTF - FPURegCache::MapReg - invalid mips reg %d", i);
 
 	if (!regs[i].away) {
 		// Reg is at home in the memory register file. Let's pull it out.
 		X64Reg xr = GetFreeXReg();
-		_assert_msg_(JIT, xr < NUM_X_FPREGS, "WTF - FPURegCache::MapReg - invalid reg %d", (int)xr);
+		_assert_msg_(xr < NUM_X_FPREGS, "WTF - FPURegCache::MapReg - invalid reg %d", (int)xr);
 		xregs[xr].mipsReg = i;
 		xregs[xr].dirty = makeDirty;
 		OpArg newloc = ::Gen::R(xr);
 		if (doLoad)	{
-			if (!regs[i].location.IsImm() && (regs[i].location.offset & 0x3)) {
-				PanicAlert("WARNING - misaligned fp register location %i", i);
-			}
 			emit->MOVSS(xr, regs[i].location);
 		}
 		regs[i].location = newloc;
@@ -632,7 +620,7 @@ void FPURegCache::MapReg(const int i, bool doLoad, bool makeDirty) {
 	} else {
 		// There are no immediates in the FPR reg file, so we already had this in a register. Make dirty as necessary.
 		xregs[RX(i)].dirty |= makeDirty;
-		_assert_msg_(JIT, regs[i].location.IsSimpleReg(), "not loaded and not simple.");
+		_assert_msg_(regs[i].location.IsSimpleReg(), "not loaded and not simple.");
 	}
 	Invariant();
 }
@@ -647,18 +635,18 @@ static int MMShuffleSwapTo0(int lane) {
 	} else if (lane == 3) {
 		return _MM_SHUFFLE(0, 2, 1, 3);
 	} else {
-		PanicAlert("MMShuffleSwapTo0: Invalid lane %d", lane);
+		_assert_msg_(false, "MMShuffleSwapTo0: Invalid lane %d", lane);
 		return 0;
 	}
 }
 
 void FPURegCache::StoreFromRegister(int i) {
-	_assert_msg_(JIT, !regs[i].location.IsImm(), "WTF - FPURegCache::StoreFromRegister - it's an imm");
-	_assert_msg_(JIT, i >= 0 && i < NUM_MIPS_FPRS, "WTF - FPURegCache::StoreFromRegister - invalid mipsreg %i PC=%08x", i, js_->compilerPC);
+	_assert_msg_(!regs[i].location.IsImm(), "WTF - FPURegCache::StoreFromRegister - it's an imm");
+	_assert_msg_(i >= 0 && i < NUM_MIPS_FPRS, "WTF - FPURegCache::StoreFromRegister - invalid mipsreg %i PC=%08x", i, js_->compilerPC);
 
 	if (regs[i].away) {
 		X64Reg xr = regs[i].location.GetSimpleReg();
-		_assert_msg_(JIT, xr < NUM_X_FPREGS, "WTF - FPURegCache::StoreFromRegister - invalid reg: x %i (mr: %i). PC=%08x", (int)xr, i, js_->compilerPC);
+		_assert_msg_(xr < NUM_X_FPREGS, "WTF - FPURegCache::StoreFromRegister - invalid reg: x %i (mr: %i). PC=%08x", (int)xr, i, js_->compilerPC);
 		if (regs[i].lane != 0) {
 			const int *mri = xregs[xr].mipsRegs;
 			int seq = 1;
@@ -675,7 +663,7 @@ void FPURegCache::StoreFromRegister(int i) {
 				}
 			}
 
-			const float *f = mri[0] - 32 < 128 ? &mips->v[voffset[mri[0] - 32]] : &tempValues[mri[0] - 32 - 128];
+			const float *f = mri[0] - 32 < 128 ? &mips_->v[voffset[mri[0] - 32]] : &mips_->tempValues[mri[0] - 32 - 128];
 			int align = (intptr_t)f & 0xf;
 
 			// If we can do a multistore...
@@ -732,16 +720,16 @@ void FPURegCache::StoreFromRegister(int i) {
 		xregs[xr].dirty = false;
 		regs[i].away = false;
 	} else {
-		//	_assert_msg_(DYNA_REC,0,"already stored");
+		//	_assert_msg_(false,"already stored");
 	}
 	Invariant();
 }
 
 void FPURegCache::DiscardR(int i) {
-	_assert_msg_(JIT, !regs[i].location.IsImm(), "FPU can't handle imm yet.");
+	_assert_msg_(!regs[i].location.IsImm(), "FPU can't handle imm yet.");
 	if (regs[i].away) {
 		X64Reg xr = regs[i].location.GetSimpleReg();
-		_assert_msg_(JIT, xr < NUM_X_FPREGS, "DiscardR: MipsReg had bad X64Reg");
+		_assert_msg_(xr < NUM_X_FPREGS, "DiscardR: MipsReg had bad X64Reg");
 		// Note that we DO NOT write it back here. That's the whole point of Discard.
 		if (regs[i].lane != 0) {
 			// But we can't just discard all of them in SIMD, just the one lane.
@@ -774,19 +762,19 @@ void FPURegCache::DiscardR(int i) {
 		regs[i].away = false;
 		regs[i].tempLocked = false;
 	} else {
-		//	_assert_msg_(DYNA_REC,0,"already stored");
+		//	_assert_msg_(false,"already stored");
 		regs[i].tempLocked = false;
 	}
 	Invariant();
 }
 
 void FPURegCache::DiscardVS(int vreg) {
-	_assert_msg_(JIT, !vregs[vreg].location.IsImm(), "FPU can't handle imm yet.");
+	_assert_msg_(!vregs[vreg].location.IsImm(), "FPU can't handle imm yet.");
 
 	if (vregs[vreg].away) {
-		_assert_msg_(JIT, vregs[vreg].lane != 0, "VS expects a SIMD reg.");
+		_assert_msg_(vregs[vreg].lane != 0, "VS expects a SIMD reg.");
 		X64Reg xr = vregs[vreg].location.GetSimpleReg();
-		_assert_msg_(JIT, xr < NUM_X_FPREGS, "DiscardR: MipsReg had bad X64Reg");
+		_assert_msg_(xr < NUM_X_FPREGS, "DiscardR: MipsReg had bad X64Reg");
 		// Note that we DO NOT write it back here. That's the whole point of Discard.
 		for (int i = 0; i < 4; ++i) {
 			int mr = xregs[xr].mipsRegs[i];
@@ -811,14 +799,14 @@ bool FPURegCache::IsTempX(X64Reg xr) {
 
 int FPURegCache::GetTempR() {
 	pendingFlush = true;
-	for (int r = TEMP0; r < TEMP0 + NUM_TEMPS; ++r) {
+	for (int r = TEMP0; r < TEMP0 + NUM_X86_FPU_TEMPS; ++r) {
 		if (!regs[r].away && !regs[r].tempLocked) {
 			regs[r].tempLocked = true;
 			return r;
 		}
 	}
 
-	_assert_msg_(JIT, 0, "Regcache ran out of temp regs, might need to DiscardR() some.");
+	_assert_msg_(false, "Regcache ran out of temp regs, might need to DiscardR() some.");
 	return -1;
 }
 
@@ -828,7 +816,7 @@ int FPURegCache::GetTempVS(u8 *v, VectorSize vsz) {
 
 	// Let's collect regs as we go, but try for n free in a row.
 	int found = 0;
-	for (int r = TEMP0; r <= TEMP0 + NUM_TEMPS - n; ++r) {
+	for (int r = TEMP0; r <= TEMP0 + NUM_X86_FPU_TEMPS - n; ++r) {
 		if (regs[r].away || regs[r].tempLocked) {
 			continue;
 		}
@@ -857,7 +845,7 @@ int FPURegCache::GetTempVS(u8 *v, VectorSize vsz) {
 	}
 
 	if (found != n) {
-		_assert_msg_(JIT, 0, "Regcache ran out of temp regs, might need to DiscardR() some.");
+		_assert_msg_(false, "Regcache ran out of temp regs, might need to DiscardR() some.");
 		return -1;
 	}
 
@@ -873,9 +861,7 @@ void FPURegCache::Flush() {
 		return;
 	}
 	for (int i = 0; i < NUM_MIPS_FPRS; i++) {
-		if (regs[i].locked) {
-			PanicAlert("Somebody forgot to unlock MIPS reg %i.", i);
-		}
+		_assert_msg_(!regs[i].locked, "Somebody forgot to unlock MIPS reg %d.", i);
 		if (regs[i].away) {
 			if (regs[i].location.IsSimpleReg()) {
 				X64Reg xr = RX(i);
@@ -884,7 +870,7 @@ void FPURegCache::Flush() {
 			} else if (regs[i].location.IsImm()) {
 				StoreFromRegister(i);
 			} else {
-				_assert_msg_(JIT,0,"Jit64 - Flush unhandled case, reg %i PC: %08x", i, mips->pc);
+				_assert_msg_(false, "Jit64 - Flush unhandled case, reg %i PC: %08x", i, mips_->pc);
 			}
 		}
 	}
@@ -894,17 +880,27 @@ void FPURegCache::Flush() {
 
 OpArg FPURegCache::GetDefaultLocation(int reg) const {
 	if (reg < 32) {
+		// Smaller than RIP addressing since we can use a byte offset.
 		return MDisp(CTXREG, reg * 4);
 	} else if (reg < 32 + 128) {
-		return M(&mips->v[voffset[reg - 32]]);
+		// Here, RIP has the advantage so let's use it when possible
+		if (useRip_) {
+			return M(&mips_->v[voffset[reg - 32]]);  // rip accessible
+		} else {
+			return MIPSSTATE_VAR_ELEM32(v[0], voffset[reg - 32]);
+		}
 	} else {
-		return M(&tempValues[reg - 32 - 128]);
+		if (useRip_) {
+			return M(&mips_->tempValues[reg - 32 - 128]);  // rip accessible
+		} else {
+			return MIPSSTATE_VAR_ELEM32(tempValues[0], reg - 32 - 128);
+		}
 	}
 }
 
 void FPURegCache::Invariant() const {
-#ifdef _DEBUG
-	_dbg_assert_msg_(JIT, SanityCheck() == 0, "Sanity check failed: %d", SanityCheck());
+#if 0
+	_assert_msg_(SanityCheck() == 0, "Sanity check failed: %d", SanityCheck());
 #endif
 }
 
@@ -1024,9 +1020,9 @@ int FPURegCache::SanityCheck() const {
 
 const int *FPURegCache::GetAllocationOrder(int &count) {
 	static const int allocationOrder[] = {
-#ifdef _M_X64
+#if PPSSPP_ARCH(AMD64)
 		XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15, XMM2, XMM3, XMM4, XMM5
-#elif _M_IX86
+#elif PPSSPP_ARCH(X86)
 		XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
 #endif
 	};
@@ -1038,7 +1034,7 @@ X64Reg FPURegCache::GetFreeXReg() {
 	X64Reg res;
 	int obtained = GetFreeXRegs(&res, 1);
 
-	_assert_msg_(JIT, obtained == 1, "Regcache ran out of regs");
+	_assert_msg_(obtained == 1, "Regcache ran out of regs");
 	return res;
 }
 
@@ -1047,7 +1043,7 @@ int FPURegCache::GetFreeXRegs(X64Reg *res, int n, bool spill) {
 	int aCount;
 	const int *aOrder = GetAllocationOrder(aCount);
 
-	_dbg_assert_msg_(JIT, n <= NUM_X_FPREGS - 2, "Cannot obtain that many regs.");
+	_dbg_assert_msg_(n <= NUM_X_FPREGS - 2, "Cannot obtain that many regs.");
 
 	int r = 0;
 
@@ -1067,7 +1063,7 @@ int FPURegCache::GetFreeXRegs(X64Reg *res, int n, bool spill) {
 		for (int i = 0; i < aCount; i++) {
 			X64Reg xr = (X64Reg)aOrder[i];
 			int preg = xregs[xr].mipsReg;
-			_assert_msg_(JIT, preg >= -1 && preg < NUM_MIPS_FPRS, "WTF - FPURegCache::GetFreeXRegs - invalid mips reg %d in xr %d", preg, (int)xr);
+			_assert_msg_(preg >= -1 && preg < NUM_MIPS_FPRS, "WTF - FPURegCache::GetFreeXRegs - invalid mips reg %d in xr %d", preg, (int)xr);
 
 			// We're only spilling here, so don't overlap.
 			if (preg != -1 && !regs[preg].locked) {
@@ -1088,7 +1084,7 @@ int FPURegCache::GetFreeXRegs(X64Reg *res, int n, bool spill) {
 
 void FPURegCache::FlushX(X64Reg reg) {
 	if (reg >= NUM_X_FPREGS) {
-		PanicAlert("Flushing non existent reg");
+		_assert_msg_(false, "Flushing non existent reg");
 	} else if (xregs[reg].mipsReg != -1) {
 		StoreFromRegister(xregs[reg].mipsReg);
 	}

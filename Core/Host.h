@@ -20,7 +20,6 @@
 #include <string>
 #include "Common/CommonTypes.h"
 
-struct InputState;
 class GraphicsContext;
 
 // TODO: Whittle this down. Collecting a bunch of random stuff like this isn't good design :P
@@ -39,9 +38,8 @@ public:
 
 	virtual void InitSound() = 0;
 	virtual void UpdateSound() {}
-	virtual void GoFullscreen(bool) {}
 	virtual void ShutdownSound() = 0;
-	virtual void PollControllers(InputState &input_state) {}
+	virtual void PollControllers() {}
 	virtual void ToggleDebugConsoleVisibility() {}
 
 	//this is sent from EMU thread! Make sure that Host handles it properly!
@@ -50,21 +48,16 @@ public:
 	virtual bool IsDebuggingEnabled() {return true;}
 	virtual bool AttemptLoadSymbolMap();
 	virtual void SaveSymbolMap() {}
+	virtual void NotifySymbolMapUpdated() {}
 	virtual void SetWindowTitle(const char *message) {}
-
-	virtual void SendCoreWait(bool) {}
-
-	// While debugging is active, it's perfectly fine for these to block.
-	virtual bool GPUDebuggingActive() { return false; }
-	virtual void GPUNotifyCommand(u32 pc) {}
-	virtual void GPUNotifyDisplay(u32 framebuf, u32 stride, int format) {}
-	virtual void GPUNotifyDraw() {}
-	virtual void GPUNotifyTextureAttachment(u32 addr) {}
 
 	virtual bool CanCreateShortcut() {return false;}
 	virtual bool CreateDesktopShortcut(std::string argumentPath, std::string title) {return false;}
 
 	virtual void NotifyUserMessage(const std::string &message, float duration = 1.0f, u32 color = 0x00FFFFFF, const char *id = nullptr) {}
+	virtual void SendUIMessage(const std::string &message, const std::string &value) {}
+
+	virtual void NotifySwitchUMDUpdated() {}
 
 	// Used for headless.
 	virtual bool ShouldSkipUI() { return false; }

@@ -17,12 +17,12 @@
 
 #include "../Core/Host.h"
 #include "InputDevice.h"
-#include "KeyboardDevice.h"
+#include "Common/CommonWindows.h"
 #include <list>
 #include <memory>
 
-extern float mouseDeltaX;
-extern float mouseDeltaY;
+extern float g_mouseDeltaX;
+extern float g_mouseDeltaY;
 
 class GraphicsContext;
 
@@ -41,7 +41,7 @@ public:
 
 	// If returns false, will return a null context
 	bool InitGraphics(std::string *error_message, GraphicsContext **ctx) override;
-	void PollControllers(InputState &input_state) override;
+	void PollControllers() override;
 	void ShutdownGraphics() override;
 
 	void InitSound() override;
@@ -52,23 +52,18 @@ public:
 	void BootDone() override;
 	bool AttemptLoadSymbolMap() override;
 	void SaveSymbolMap() override;
+	void NotifySymbolMapUpdated() override;
 	void SetWindowTitle(const char *message) override;
 
-	bool GPUDebuggingActive() override;
-	void GPUNotifyCommand(u32 pc) override;
-	void GPUNotifyDisplay(u32 framebuf, u32 stride, int format) override;
-	void GPUNotifyDraw() override;
-	void GPUNotifyTextureAttachment(u32 addr) override;
 	void ToggleDebugConsoleVisibility() override;
 
 	bool CanCreateShortcut() override;
 	bool CreateDesktopShortcut(std::string argumentPath, std::string title) override;
 
 	void NotifyUserMessage(const std::string &message, float duration = 1.0f, u32 color = 0x00FFFFFF, const char *id = nullptr) override;
+	void SendUIMessage(const std::string &message, const std::string &value) override;
 
-	void GoFullscreen(bool) override;
-
-	std::shared_ptr<KeyboardDevice> keyboard;
+	void NotifySwitchUMDUpdated() override;
 
 	GraphicsContext *GetGraphicsContext() { return gfx_; }
 
@@ -79,7 +74,10 @@ private:
 	HINSTANCE hInstance_;
 	HWND displayWindow_;
 	HWND mainWindow_;
-	GraphicsContext *gfx_;
+	GraphicsContext *gfx_ = nullptr;
+	size_t numDinputDevices_ = 0;
+	std::wstring lastTitle_;
+	int lastNumInstances_ = 0;
 
-	std::list<std::shared_ptr<InputDevice>> input;
+	std::list<std::unique_ptr<InputDevice>> input;
 };

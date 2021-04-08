@@ -15,13 +15,17 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-
-#include "Common/FileUtil.h"
-#include "Core/Loaders.h"
-#include "Core/FileSystems/BlockDevices.h"
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+
+#include "Common/Data/Text/I18n.h"
+#include "Common/File/FileUtil.h"
+#include "Common/Log.h"
+#include "Common/Swap.h"
+#include "Core/Loaders.h"
+#include "Core/Host.h"
+#include "Core/FileSystems/BlockDevices.h"
 
 extern "C"
 {
@@ -30,28 +34,31 @@ extern "C"
 #include "ext/libkirk/kirk_engine.h"
 };
 
+std::mutex NPDRMDemoBlockDevice::mutex_;
+
 BlockDevice *constructBlockDevice(FileLoader *fileLoader) {
 	// Check for CISO
 	if (!fileLoader->Exists())
 		return nullptr;
-	char buffer[4];
+	char buffer[4]{};
 	size_t size = fileLoader->ReadAt(0, 1, 4, buffer);
-	fileLoader->Seek(0);
-	if (!memcmp(buffer, "CISO", 4) && size == 4)
+	if (size == 4 && !memcmp(buffer, "CISO", 4))
 		return new CISOFileBlockDevice(fileLoader);
-	else if (!memcmp(buffer, "\x00PBP", 4) && size == 4)
+	else if (size == 4 && !memcmp(buffer, "\x00PBP", 4))
 		return new NPDRMDemoBlockDevice(fileLoader);
 	else
 		return new FileBlockDevice(fileLoader);
 }
 
-u32 BlockDevice::CalculateCRC() {
+u32 BlockDevice::CalculateCRC(volatile bool *cancel) {
 	u32 crc = crc32(0, Z_NULL, 0);
 
 	u8 block[2048];
 	for (u32 i = 0; i < GetNumBlocks(); ++i) {
+		if (cancel && *cancel)
+			return 0;
 		if (!ReadBlock(i, block, true)) {
-			ERROR_LOG(HLE, "Failed to read block for CRC");
+			ERROR_LOG(FILESYS, "Failed to read block for CRC");
 			return 0;
 		}
 		crc = crc32(crc, block, 2048);
@@ -60,6 +67,13 @@ u32 BlockDevice::CalculateCRC() {
 	return crc;
 }
 
+void BlockDevice::NotifyReadError() {
+	auto err = GetI18NCategory("Error");
+	if (!reportedError_) {
+		host->NotifyUserMessage(err->T("Game disc read error - ISO corrupt"), 6.0f);
+		reportedError_ = true;
+	}
+}
 
 FileBlockDevice::FileBlockDevice(FileLoader *fileLoader)
 	: fileLoader_(fileLoader) {
@@ -124,18 +138,11 @@ CISOFileBlockDevice::CISOFileBlockDevice(FileLoader *fileLoader)
 
 	CISO_H hdr;
 	size_t readSize = fileLoader->ReadAt(0, sizeof(CISO_H), 1, &hdr);
-	if (readSize != 1 || memcmp(hdr.magic, "CISO", 4) != 0)
-	{
+	if (readSize != 1 || memcmp(hdr.magic, "CISO", 4) != 0) {
 		WARN_LOG(LOADER, "Invalid CSO!");
 	}
-	else
-	{
-		VERBOSE_LOG(LOADER, "Valid CSO!");
-	}
-	if (hdr.ver > 1)
-	{
-		ERROR_LOG(LOADER, "CSO version too high!");
-		//ARGH!
+	if (hdr.ver > 1) {
+		WARN_LOG(LOADER, "CSO version too high!");
 	}
 
 	frameSize = hdr.block_size;
@@ -164,27 +171,40 @@ CISOFileBlockDevice::CISOFileBlockDevice(FileLoader *fileLoader)
 	zlibBufferFrame = numFrames;
 
 	const u32 indexSize = numFrames + 1;
+	const size_t headerEnd = hdr.ver > 1 ? (size_t)hdr.header_size : sizeof(hdr);
 
 #if COMMON_LITTLE_ENDIAN
 	index = new u32[indexSize];
-	if (fileLoader->ReadAt(sizeof(hdr), sizeof(u32), indexSize, index) != indexSize)
+	if (fileLoader->ReadAt(headerEnd, sizeof(u32), indexSize, index) != indexSize) {
+		NotifyReadError();
 		memset(index, 0, indexSize * sizeof(u32));
+	}
 #else
 	index = new u32[indexSize];
 	u32_le *indexTemp = new u32_le[indexSize];
 
-	if (fileLoader->ReadAt(sizeof(hdr), sizeof(u32), indexSize, indexTemp) != indexSize)
-	{
+	if (fileLoader->ReadAt(headerEnd, sizeof(u32), indexSize, indexTemp) != indexSize) {
+		NotifyReadError();
 		memset(indexTemp, 0, indexSize * sizeof(u32_le));
 	}
 
 	for (u32 i = 0; i < indexSize; i++)
-	{
 		index[i] = indexTemp[i];
-	}
 
 	delete[] indexTemp;
 #endif
+
+	ver_ = hdr.ver;
+
+	// Double check that the CSO is not truncated.  In most cases, this will be the exact size.
+	u64 fileSize = fileLoader->FileSize();
+	u64 lastIndexPos = index[indexSize - 1] & 0x7FFFFFFF;
+	u64 expectedFileSize = lastIndexPos << indexShift;
+	if (expectedFileSize > fileSize) {
+		ERROR_LOG(LOADER, "Expected CSO to at least be %lld bytes, but file is %lld bytes. File: '%s'",
+			expectedFileSize, fileSize, fileLoader->Path().c_str());
+		NotifyReadError();
+	}
 }
 
 CISOFileBlockDevice::~CISOFileBlockDevice()
@@ -197,8 +217,7 @@ CISOFileBlockDevice::~CISOFileBlockDevice()
 bool CISOFileBlockDevice::ReadBlock(int blockNumber, u8 *outPtr, bool uncached)
 {
 	FileLoader::Flags flags = uncached ? FileLoader::Flags::HINT_UNCACHED : FileLoader::Flags::NONE;
-	if ((u32)blockNumber >= numBlocks)
-	{
+	if ((u32)blockNumber >= numBlocks) {
 		memset(outPtr, 0, GetBlockSize());
 		return false;
 	}
@@ -214,28 +233,27 @@ bool CISOFileBlockDevice::ReadBlock(int blockNumber, u8 *outPtr, bool uncached)
 	const size_t compressedReadSize = (size_t)(compressedReadEnd - compressedReadPos);
 	const u32 compressedOffset = (blockNumber & ((1 << blockShift) - 1)) * GetBlockSize();
 
-	const int plain = idx & 0x80000000;
-	if (plain)
-	{
+	bool plain = (idx & 0x80000000) != 0;
+	if (ver_ >= 2) {
+		// CSO v2+ requires blocks be uncompressed if large enough to be.  High bit means other things.
+		plain = compressedReadSize >= frameSize;
+	}
+	if (plain) {
 		int readSize = (u32)fileLoader_->ReadAt(compressedReadPos + compressedOffset, 1, GetBlockSize(), outPtr, flags);
 		if (readSize < GetBlockSize())
 			memset(outPtr + readSize, 0, GetBlockSize() - readSize);
-	}
-	else if (zlibBufferFrame == frameNumber)
-	{
+	} else if (zlibBufferFrame == frameNumber) {
 		// We already have it.  Just apply the offset and copy.
 		memcpy(outPtr, zlibBuffer + compressedOffset, GetBlockSize());
-	}
-	else
-	{
+	} else {
 		const u32 readSize = (u32)fileLoader_->ReadAt(compressedReadPos, 1, compressedReadSize, readBuffer, flags);
 
 		z.zalloc = Z_NULL;
 		z.zfree = Z_NULL;
 		z.opaque = Z_NULL;
-		if(inflateInit2(&z, -15) != Z_OK)
-		{
+		if (inflateInit2(&z, -15) != Z_OK) {
 			ERROR_LOG(LOADER, "GetBlockSize() ERROR: %s\n", (z.msg) ? z.msg : "?");
+			NotifyReadError();
 			return false;
 		}
 		z.avail_in = readSize;
@@ -244,24 +262,23 @@ bool CISOFileBlockDevice::ReadBlock(int blockNumber, u8 *outPtr, bool uncached)
 		z.next_in = readBuffer;
 
 		int status = inflate(&z, Z_FINISH);
-		if (status != Z_STREAM_END)
-		{
+		if (status != Z_STREAM_END) {
 			ERROR_LOG(LOADER, "block %d: inflate : %s[%d]\n", blockNumber, (z.msg) ? z.msg : "error", status);
+			NotifyReadError();
 			inflateEnd(&z);
 			memset(outPtr, 0, GetBlockSize());
 			return false;
 		}
-		if (z.total_out != frameSize)
-		{
+		if (z.total_out != frameSize) {
 			ERROR_LOG(LOADER, "block %d: block size error %d != %d\n", blockNumber, (u32)z.total_out, frameSize);
+			NotifyReadError();
 			inflateEnd(&z);
 			memset(outPtr, 0, GetBlockSize());
 			return false;
 		}
 		inflateEnd(&z);
 
-		if (frameSize != (u32)GetBlockSize())
-		{
+		if (frameSize != (u32)GetBlockSize()) {
 			zlibBufferFrame = frameNumber;
 			memcpy(outPtr, zlibBuffer + compressedOffset, GetBlockSize());
 		}
@@ -339,9 +356,11 @@ bool CISOFileBlockDevice::ReadBlocks(u32 minBlock, int count, u8 *outPtr) {
 			int status = inflate(&z, Z_FINISH);
 			if (status != Z_STREAM_END) {
 				ERROR_LOG(LOADER, "Inflate frame %d: failed - %s[%d]\n", frame, (z.msg) ? z.msg : "error", status);
+				NotifyReadError();
 				memset(outPtr, 0, frameBlocks * GetBlockSize());
 			} else if (z.total_out != frameSize) {
 				ERROR_LOG(LOADER, "Inflate frame %d: block size error %d != %d\n", frame, (u32)z.total_out, frameSize);
+				NotifyReadError();
 				memset(outPtr, 0, frameBlocks * GetBlockSize());
 			} else if (frameBlocks != blocksPerFrame) {
 				memcpy(outPtr, zlibBuffer + frameBlockOffset * GetBlockSize(), frameBlocks * GetBlockSize());
@@ -360,13 +379,10 @@ bool CISOFileBlockDevice::ReadBlocks(u32 minBlock, int count, u8 *outPtr) {
 	return true;
 }
 
-
-recursive_mutex NPDRMDemoBlockDevice::mutex_;
-
 NPDRMDemoBlockDevice::NPDRMDemoBlockDevice(FileLoader *fileLoader)
 	: fileLoader_(fileLoader)
 {
-	lock_guard guard(mutex_);
+	std::lock_guard<std::mutex> guard(mutex_);
 	MAC_KEY mkey;
 	CIPHER_KEY ckey;
 	u8 np_header[256];
@@ -432,7 +448,7 @@ NPDRMDemoBlockDevice::NPDRMDemoBlockDevice(FileLoader *fileLoader)
 
 NPDRMDemoBlockDevice::~NPDRMDemoBlockDevice()
 {
-	lock_guard guard(mutex_);
+	std::lock_guard<std::mutex> guard(mutex_);
 	delete [] table;
 	delete [] tempBuf;
 	delete [] blockBuf;
@@ -443,7 +459,7 @@ int lzrc_decompress(void *out, int out_len, void *in, int in_len);
 bool NPDRMDemoBlockDevice::ReadBlock(int blockNumber, u8 *outPtr, bool uncached)
 {
 	FileLoader::Flags flags = uncached ? FileLoader::Flags::HINT_UNCACHED : FileLoader::Flags::NONE;
-	lock_guard guard(mutex_);
+	std::lock_guard<std::mutex> guard(mutex_);
 	CIPHER_KEY ckey;
 	int block, lba, lzsize;
 	size_t readSize;
@@ -493,6 +509,7 @@ bool NPDRMDemoBlockDevice::ReadBlock(int blockNumber, u8 *outPtr, bool uncached)
 		lzsize = lzrc_decompress(blockBuf, 0x00100000, readBuf, table[block].size);
 		if(lzsize!=blockSize){
 			ERROR_LOG(LOADER, "LZRC decompress error! lzsize=%d\n", lzsize);
+			NotifyReadError();
 			return false;
 		}
 	}

@@ -38,7 +38,7 @@ enum {
 	PSP_SAS_PITCH_MAX = 0x4000,
 
 	PSP_SAS_VOL_MAX = 0x1000,
-	PSP_SAS_MAX_GRAIN = 1024,   // VERY conservative! 256 is quite common but don't think I've ever seen bigger.
+	PSP_SAS_MAX_GRAIN = 2048,   // Matches the max value of the parameter to sceSasInit
 
 	PSP_SAS_ADSR_CURVE_MODE_LINEAR_INCREASE = 0,
 	PSP_SAS_ADSR_CURVE_MODE_LINEAR_DECREASE = 1,
@@ -111,21 +111,21 @@ public:
 
 private:
 	s16 samples[28];
-	int curSample;
+	int curSample = 0;
 
-	u32 data_;
-	u32 read_;
-	int curBlock_;
-	int loopStartBlock_;
-	int numBlocks_;
+	u32 data_ = 0;
+	u32 read_ = 0;
+	int curBlock_ = -1;
+	int loopStartBlock_ = -1;
+	int numBlocks_ = 0;
 
 	// rolling state. start at 0, should probably reset to 0 on loops?
-	int s_1;
-	int s_2;
+	int s_1 = 0;
+	int s_2 = 0;
 
-	bool loopEnabled_;
-	bool loopAtNextBlock_;
-	bool end_;
+	bool loopEnabled_ = false;
+	bool loopAtNextBlock_ = false;
+	bool end_ = false;
 };
 
 class SasAtrac3 {
@@ -282,16 +282,16 @@ public:
 	int GetGrainSize() const { return grainSize; }
 	int EstimateMixUs();
 
-	int maxVoices;
-	int sampleRate;
-	int outputMode;
+	int maxVoices = PSP_SAS_VOICES_MAX;
+	int sampleRate = 44100;
+	int outputMode = PSP_SAS_OUTPUTMODE_MIXED;
 
-	int *mixBuffer;
-	int *sendBuffer;
-	s16 *sendBufferDownsampled;
-	s16 *sendBufferProcessed;
+	int *mixBuffer = nullptr;
+	int *sendBuffer = nullptr;
+	s16 *sendBufferDownsampled = nullptr;
+	s16 *sendBufferProcessed = nullptr;
 
-	FILE *audioDump;
+	FILE *audioDump = nullptr;
 
 	void Mix(u32 outAddr, u32 inAddr = 0, int leftVol = 0, int rightVol = 0);
 	void MixVoice(SasVoice &voice);
@@ -310,6 +310,6 @@ public:
 
 private:
 	SasReverb reverb_;
-	int grainSize;
+	int grainSize = 0;
 	int16_t mixTemp_[PSP_SAS_MAX_GRAIN * 4 + 2 + 8];  // some extra margin for very high pitches.
 };

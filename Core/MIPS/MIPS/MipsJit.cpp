@@ -18,9 +18,9 @@
 #include "ppsspp_config.h"
 #if PPSSPP_ARCH(MIPS)
 
-#include "base/logging.h"
-#include "profiler/profiler.h"
-#include "Common/ChunkFile.h"
+#include "Common/Profiler/Profiler.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
 #include "Core/Reporting.h"
 #include "Core/Config.h"
 #include "Core/Core.h"
@@ -42,7 +42,7 @@ void DisassembleMIPS(const u8 *data, int size) {
 namespace MIPSComp
 {
 
-MipsJit::MipsJit(MIPSState *mips) : blocks(mips, this), mips_(mips)
+MipsJit::MipsJit(MIPSState *mipsState) : blocks(mipsState, this), mips_(mipsState)
 { 
 	logBlocks = 0;
 	dontLogBlocks = 0;
@@ -57,28 +57,16 @@ void MipsJit::DoState(PointerWrap &p)
 	if (!s)
 		return;
 
-	p.Do(js.startDefaultPrefix);
+	Do(p, js.startDefaultPrefix);
 	if (s >= 2) {
-		p.Do(js.hasSetRounding);
+		Do(p, js.hasSetRounding);
 		js.lastSetRounding = 0;
 	} else {
 		js.hasSetRounding = 1;
 	}
 }
 
-// This is here so the savestate matches between jit and non-jit.
-void MipsJit::DoDummyState(PointerWrap &p)
-{
-	auto s = p.Section("Jit", 1, 2);
-	if (!s)
-		return;
-
-	bool dummy = false;
-	p.Do(dummy);
-	if (s >= 2) {
-		dummy = true;
-		p.Do(dummy);
-	}
+void MipsJit::UpdateFCR31() {
 }
 
 void MipsJit::FlushAll()
@@ -92,16 +80,21 @@ void MipsJit::FlushPrefixV()
 {
 }
 
+MIPSOpcode MipsJit::GetOriginalOp(MIPSOpcode op) {
+	JitBlockCache *bc = GetBlockCache();
+	int block_num = bc->GetBlockNumberFromEmuHackOp(op, true);
+	if (block_num >= 0) {
+		return bc->GetOriginalFirstOp(block_num);
+	} else {
+		return op;
+	}
+}
+
 void MipsJit::ClearCache()
 {
 	blocks.Clear();
-	ClearCodeSpace();
+	ClearCodeSpace(0);
 	//GenerateFixedCode();
-}
-
-void MipsJit::InvalidateCache()
-{
-	blocks.Clear();
 }
 
 void MipsJit::InvalidateCacheAt(u32 em_address, int length)
@@ -242,6 +235,14 @@ void MipsJit::Comp_RunBlock(MIPSOpcode op)
 {
 	// This shouldn't be necessary, the dispatcher should catch us before we get here.
 	ERROR_LOG(JIT, "Comp_RunBlock should never be reached!");
+}
+
+void MipsJit::LinkBlock(u8 *exitPoint, const u8 *checkedEntry) {
+	// TODO
+}
+
+void MipsJit::UnlinkBlock(u8 *checkedEntry, u32 originalAddress) {
+	// TODO
 }
 
 bool MipsJit::ReplaceJalTo(u32 dest) {

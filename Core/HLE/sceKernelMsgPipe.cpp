@@ -17,6 +17,9 @@
 
 #include <algorithm>
 
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/Serialize/SerializeMap.h"
 #include "Core/Reporting.h"
 #include "Core/CoreTiming.h"
 #include "Core/MemMapHelpers.h"
@@ -27,7 +30,6 @@
 #include "Core/HLE/sceKernelInterrupt.h"
 #include "Core/HLE/sceKernelThread.h"
 #include "Core/HLE/KernelWaitHelpers.h"
-#include "Common/ChunkFile.h"
 
 #define SCE_KERNEL_MPA_THFIFO_S 0x0000
 #define SCE_KERNEL_MPA_THPRI_S  0x0100
@@ -103,7 +105,7 @@ struct MsgPipeWaitingThread
 
 	void ReadBuffer(u32 destPtr, u32 len)
 	{
-		Memory::Memcpy(destPtr, bufAddr + bufSize - freeSize, len);
+		Memory::Memcpy(destPtr, bufAddr + bufSize - freeSize, len, "MsgPipeReadBuffer");
 		freeSize -= len;
 		if (transferredBytes.IsValid())
 			*transferredBytes += len;
@@ -111,7 +113,7 @@ struct MsgPipeWaitingThread
 
 	void WriteBuffer(u32 srcPtr, u32 len)
 	{
-		Memory::Memcpy(bufAddr + (bufSize - freeSize), srcPtr, len);
+		Memory::Memcpy(bufAddr + (bufSize - freeSize), srcPtr, len, "MsgPipeWriteBuffer");
 		freeSize -= len;
 		if (transferredBytes.IsValid())
 			*transferredBytes += len;
@@ -131,7 +133,8 @@ static bool __KernelMsgPipeThreadSortPriority(MsgPipeWaitingThread thread1, MsgP
 struct MsgPipe : public KernelObject
 {
 	const char *GetName() override { return nmp.name; }
-	const char *GetTypeName() override { return "MsgPipe"; }
+	const char *GetTypeName() override { return GetStaticTypeName(); }
+	static const char *GetStaticTypeName() { return "MsgPipe"; }
 	static u32 GetMissingErrorCode() { return SCE_KERNEL_ERROR_UNKNOWN_MPPID; }
 	static int GetStaticIDType() { return SCE_KERNEL_TMID_Mpipe; }
 	int GetIDType() const override { return SCE_KERNEL_TMID_Mpipe; }
@@ -277,13 +280,13 @@ struct MsgPipe : public KernelObject
 		if (!s)
 			return;
 
-		p.Do(nmp);
+		Do(p, nmp);
 		MsgPipeWaitingThread mpwt1 = {0}, mpwt2 = {0};
-		p.Do(sendWaitingThreads, mpwt1);
-		p.Do(receiveWaitingThreads, mpwt2);
-		p.Do(pausedSendWaits);
-		p.Do(pausedReceiveWaits);
-		p.Do(buffer);
+		Do(p, sendWaitingThreads, mpwt1);
+		Do(p, receiveWaitingThreads, mpwt2);
+		Do(p, pausedSendWaits);
+		Do(p, pausedReceiveWaits);
+		Do(p, buffer);
 	}
 
 	NativeMsgPipe nmp;
@@ -396,7 +399,7 @@ static int __KernelSendMsgPipe(MsgPipe *m, u32 sendBufAddr, u32 sendSize, int wa
 
 		if (bytesToSend != 0)
 		{
-			Memory::Memcpy(m->buffer + (m->nmp.bufSize - m->nmp.freeSize), sendBufAddr, bytesToSend);
+			Memory::Memcpy(m->buffer + (m->nmp.bufSize - m->nmp.freeSize), sendBufAddr, bytesToSend, "MsgPipeSend");
 			m->nmp.freeSize -= bytesToSend;
 			curSendAddr += bytesToSend;
 			sendSize -= bytesToSend;
@@ -489,7 +492,7 @@ static int __KernelReceiveMsgPipe(MsgPipe *m, u32 receiveBufAddr, u32 receiveSiz
 			u32 bytesToReceive = std::min(receiveSize, m->GetUsedSize());
 			if (bytesToReceive != 0)
 			{
-				Memory::Memcpy(curReceiveAddr, m->buffer, bytesToReceive);
+				Memory::Memcpy(curReceiveAddr, m->buffer, bytesToReceive, "MsgPipeReceive");
 				m->nmp.freeSize += bytesToReceive;
 				memmove(Memory::GetPointer(m->buffer), Memory::GetPointer(m->buffer) + bytesToReceive, m->GetUsedSize());
 				curReceiveAddr += bytesToReceive;
@@ -607,7 +610,6 @@ static bool __KernelCheckResumeMsgPipeReceive(MsgPipe *m, MsgPipeWaitingThread &
 static void __KernelMsgPipeEndCallback(SceUID threadID, SceUID prevCallbackId) {
 	u32 error;
 	u32 waitValue = __KernelGetWaitValue(threadID, error);
-	u32 timeoutPtr = __KernelGetWaitTimeoutPtr(threadID, error);
 	SceUID uid = __KernelGetWaitID(threadID, WAITTYPE_MSGPIPE, error);
 	MsgPipe *ko = uid == 0 ? NULL : kernelObjects.Get<MsgPipe>(uid, error);
 
@@ -661,7 +663,7 @@ void __KernelMsgPipeDoState(PointerWrap &p)
 	if (!s)
 		return;
 
-	p.Do(waitTimer);
+	Do(p, waitTimer);
 	CoreTiming::RestoreRegisterEvent(waitTimer, "MsgPipeTimeout", __KernelMsgPipeTimeout);
 }
 

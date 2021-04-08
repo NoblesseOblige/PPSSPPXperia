@@ -19,6 +19,7 @@
 #pragma once
 
 #include "Common/Common.h"
+#include "Common/Log.h"
 #include "Core/MIPS/MIPS.h"
 
 struct JitBlock;
@@ -56,15 +57,6 @@ namespace MIPSComp {
 			AFTER_MEMCHECK_CLEANUP = 0x04,
 		};
 
-		JitState()
-			: hasSetRounding(0),
-			lastSetRounding(0),
-			currentRoundingFunc(nullptr),
-			startDefaultPrefix(true),
-			prefixSFlag(PREFIX_UNKNOWN),
-			prefixTFlag(PREFIX_UNKNOWN),
-			prefixDFlag(PREFIX_UNKNOWN) {}
-
 		u32 compilerPC;
 		u32 blockStart;
 		u32 lastContinuedPC;
@@ -78,20 +70,21 @@ namespace MIPSComp {
 		int numInstructions;
 		bool compiling;	// TODO: get rid of this in favor of using analysis results to determine end of block
 		bool hadBreakpoints;
+		bool preloading = false;
 		JitBlock *curBlock;
 
-		u8 hasSetRounding;
-		u8 lastSetRounding;
-		const u8 *currentRoundingFunc;
+		u8 hasSetRounding = 0;
+		u8 lastSetRounding = 0;
+		const u8 *currentRoundingFunc = nullptr;
 
 		// VFPU prefix magic
-		bool startDefaultPrefix;
+		bool startDefaultPrefix = true;
 		u32 prefixS;
 		u32 prefixT;
 		u32 prefixD;
-		PrefixState prefixSFlag;
-		PrefixState prefixTFlag;
-		PrefixState prefixDFlag;
+		PrefixState prefixSFlag = PREFIX_UNKNOWN;
+		PrefixState prefixTFlag = PREFIX_UNKNOWN;
+		PrefixState prefixDFlag = PREFIX_UNKNOWN;
 
 		void PrefixStart() {
 			if (startDefaultPrefix) {
@@ -107,12 +100,22 @@ namespace MIPSComp {
 			prefixDFlag = PREFIX_UNKNOWN;
 		}
 
+		bool HasSPrefix() const {
+			return (prefixSFlag & PREFIX_KNOWN) == 0 || prefixS != 0xE4;
+		}
+
+		bool HasTPrefix() const {
+			return (prefixTFlag & PREFIX_KNOWN) == 0 || prefixT != 0xE4;
+		}
+
+		bool HasDPrefix() const {
+			return (prefixDFlag & PREFIX_KNOWN) == 0 || prefixD != 0x0;
+		}
+
 		bool MayHavePrefix() const {
 			if (HasUnknownPrefix()) {
 				return true;
 			} else if (prefixS != 0xE4 || prefixT != 0xE4 || prefixD != 0) {
-				return true;
-			} else if (VfpuWriteMask() != 0) {
 				return true;
 			}
 			return false;
@@ -126,22 +129,19 @@ namespace MIPSComp {
 		}
 
 		bool HasNoPrefix() const {
-			return (prefixDFlag & PREFIX_KNOWN) && (prefixSFlag & PREFIX_KNOWN) && (prefixTFlag & PREFIX_KNOWN) && (prefixS == 0xE4 && prefixT == 0xE4 && prefixD == 0);
+			return !HasSPrefix() && !HasTPrefix() && !HasDPrefix();
 		}
 
 		void EatPrefix() {
-			if ((prefixSFlag & PREFIX_KNOWN) == 0 || prefixS != 0xE4) {
+			if (HasSPrefix())
 				prefixSFlag = PREFIX_KNOWN_DIRTY;
-				prefixS = 0xE4;
-			}
-			if ((prefixTFlag & PREFIX_KNOWN) == 0 || prefixT != 0xE4) {
+			prefixS = 0xE4;
+			if (HasTPrefix())
 				prefixTFlag = PREFIX_KNOWN_DIRTY;
-				prefixT = 0xE4;
-			}
-			if ((prefixDFlag & PREFIX_KNOWN) == 0 || prefixD != 0x0) {
+			prefixT = 0xE4;
+			if (HasDPrefix())
 				prefixDFlag = PREFIX_KNOWN_DIRTY;
-				prefixD = 0x0;
-			}
+			prefixD = 0x0;
 		}
 
 		u8 VfpuWriteMask() const {
@@ -181,8 +181,46 @@ namespace MIPSComp {
 		}
 	};
 
+	enum class JitDisable {
+		ALU = 0x0001,
+		ALU_IMM = 0x0002,
+		ALU_BIT = 0x0004,
+		MULDIV = 0x0008,
+
+		FPU = 0x0010,
+		FPU_COMP = 0x0040,
+		FPU_XFER = 0x0080,
+
+		VFPU_VEC = 0x0100,
+		VFPU_MTX_VTFM = 0x0200,
+		VFPU_COMP = 0x0400,
+		VFPU_XFER = 0x0800,
+
+		LSU = 0x1000,
+		LSU_UNALIGNED = 0x2000,
+		LSU_FPU = 0x4000,
+		LSU_VFPU = 0x8000,
+
+		SIMD = 0x00100000,
+		BLOCKLINK = 0x00200000,
+		POINTERIFY = 0x00400000,
+		STATIC_ALLOC = 0x00800000,
+		CACHE_POINTERS = 0x01000000,
+		REGALLOC_GPR = 0x02000000,  // Doesn't really disable regalloc, but flushes after every instr.
+		REGALLOC_FPR = 0x04000000,
+		VFPU_MTX_VMMOV = 0x08000000,
+		VFPU_MTX_VMMUL = 0x10000000,
+		VFPU_MTX_VMSCL = 0x20000000,
+
+		ALL_FLAGS = 0x3FFFFFFF,
+	};
+
 	struct JitOptions {
 		JitOptions();
+
+		bool Disabled(JitDisable bit);
+
+		uint32_t disableFlags;
 
 		// x86
 		bool enableVFPUSIMD;
@@ -198,6 +236,7 @@ namespace MIPSComp {
 		// ARM64 only
 		bool useASIMDVFPU;
 		bool useStaticAlloc;
+		bool enablePointerify;
 
 		// Common
 		bool enableBlocklink;

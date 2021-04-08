@@ -17,13 +17,20 @@
 
 #pragma once
 
+#include <cstdint>
+
+#include "Common/GPU/Shader.h"
 #include "GPU/ge_constants.h"
 
-enum ShaderLanguage {
-	GLSL_140,
-	GLSL_300,
-	GLSL_VULKAN,
-	HLSL_DX9,
-};
+static const int DEPAL_TEXTURE_OLD_AGE = 120;
 
 void GenerateDepalShader(char *buffer, GEBufferFormat pixelFormat, ShaderLanguage language);
+
+class DepalShaderCacheCommon {
+public:
+	virtual ~DepalShaderCacheCommon() {}
+
+protected:
+	uint32_t GenerateShaderID(uint32_t clutMode, GEBufferFormat pixelFormat) const;
+	uint32_t GetClutID(GEPaletteFormat clutFormat, uint32_t clutHash) const;
+};

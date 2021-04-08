@@ -28,12 +28,13 @@
 
 #include <cstdlib>
 #include <functional>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
-#include "base/basictypes.h"
-#include "base/mutex.h"
-#include "profiler/profiler.h"
-#include "thread/thread.h"
-#include "thread/threadutil.h"
+#include "Common/Profiler/Profiler.h"
+#include "Common/Thread/ThreadUtil.h"
+#include "Common/Serialize/SerializeFuncs.h"
 #include "Common/Log.h"
 #include "Core/Config.h"
 #include "Core/CoreTiming.h"
@@ -91,10 +92,10 @@ struct SasThreadParams {
 };
 
 static std::thread *sasThread;
-static recursive_mutex sasWakeMutex;
-static recursive_mutex sasDoneMutex;
-static condition_variable sasWake;
-static condition_variable sasDone;
+static std::mutex sasWakeMutex;
+static std::mutex sasDoneMutex;
+static std::condition_variable sasWake;
+static std::condition_variable sasDone;
 static volatile int sasThreadState = SasThreadState::DISABLED;
 static SasThreadParams sasThreadParams;
 static int sasMixEvent = -1;
@@ -102,26 +103,24 @@ static int sasMixEvent = -1;
 int __SasThread() {
 	setCurrentThreadName("SAS");
 
-	lock_guard guard(sasWakeMutex);
+	std::unique_lock<std::mutex> guard(sasWakeMutex);
 	while (sasThreadState != SasThreadState::DISABLED) {
-		sasWake.wait(sasWakeMutex);
+		sasWake.wait(guard);
 		if (sasThreadState == SasThreadState::QUEUED) {
 			sas->Mix(sasThreadParams.outAddr, sasThreadParams.inAddr, sasThreadParams.leftVol, sasThreadParams.rightVol);
 
-			sasDoneMutex.lock();
+			std::lock_guard<std::mutex> doneGuard(sasDoneMutex);
 			sasThreadState = SasThreadState::READY;
 			sasDone.notify_one();
-			sasDoneMutex.unlock();
 		}
 	}
 	return 0;
 }
 
 static void __SasDrain() {
-	sasDoneMutex.lock();
+	std::unique_lock<std::mutex> guard(sasDoneMutex);
 	while (sasThreadState == SasThreadState::QUEUED)
-		sasDone.wait(sasDoneMutex);
-	sasDoneMutex.unlock();
+		sasDone.wait(guard);
 }
 
 static void __SasEnqueueMix(u32 outAddr, u32 inAddr = 0, int leftVol = 0, int rightVol = 0) {
@@ -204,18 +203,16 @@ void __SasDoState(PointerWrap &p) {
 		__SasDrain();
 	}
 
-	p.DoClass(sas);
+	DoClass(p, sas);
 
 	if (s >= 2) {
-		p.Do(sasMixEvent);
+		Do(p, sasMixEvent);
 	} else {
 		sasMixEvent = -1;
 		__SasDisableThread();
 	}
 
-	if (sasMixEvent != -1) {
-		CoreTiming::RestoreRegisterEvent(sasMixEvent, "SasMix", sasMixFinish);
-	}
+	CoreTiming::RestoreRegisterEvent(sasMixEvent, "SasMix", sasMixFinish);
 }
 
 void __SasShutdown() {
@@ -269,7 +266,7 @@ static u32 sceSasGetEndFlag(u32 core) {
 			endFlag |= (1 << i);
 	}
 
-	DEBUG_LOG(SCESAS, "%08x=sceSasGetEndFlag(%08x)", endFlag, core);
+	VERBOSE_LOG(SCESAS, "%08x=sceSasGetEndFlag(%08x)", endFlag, core);
 	return endFlag;
 }
 

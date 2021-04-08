@@ -102,17 +102,85 @@ float Vec3<float>::Distance2To(Vec3<float> &other)
 	return Vec3<float>(other-(*this)).Length2();
 }
 
+#if defined(_M_SSE)
+__m128 SSENormalizeMultiplierSSE2(__m128 v)
+{
+	const __m128 sq = _mm_mul_ps(v, v);
+	const __m128 r2 = _mm_shuffle_ps(sq, sq, _MM_SHUFFLE(0, 0, 0, 1));
+	const __m128 r3 = _mm_shuffle_ps(sq, sq, _MM_SHUFFLE(0, 0, 0, 2));
+	const __m128 res = _mm_add_ss(r3, _mm_add_ss(r2, sq));
+
+	const __m128 rt = _mm_rsqrt_ss(res);
+	return _mm_shuffle_ps(rt, rt, _MM_SHUFFLE(0, 0, 0, 0));
+}
+
+#if _M_SSE >= 0x401
+__m128 SSENormalizeMultiplierSSE4(__m128 v)
+{
+	return _mm_rsqrt_ps(_mm_dp_ps(v, v, 0xFF));
+}
+
+__m128 SSENormalizeMultiplier(bool useSSE4, __m128 v)
+{
+	if (useSSE4)
+		return SSENormalizeMultiplierSSE4(v);
+	return SSENormalizeMultiplierSSE2(v);
+}
+#else
+__m128 SSENormalizeMultiplier(bool useSSE4, __m128 v)
+{
+	return SSENormalizeMultiplierSSE2(v);
+}
+#endif
 template<>
-Vec3<float> Vec3<float>::Normalized() const
+Vec3<float> Vec3<float>::Normalized(bool useSSE4) const
+{
+	const __m128 normalize = SSENormalizeMultiplier(useSSE4, vec);
+	return _mm_mul_ps(normalize, vec);
+}
+
+template<>
+Vec3<float> Vec3<float>::NormalizedOr001(bool useSSE4) const {
+	const __m128 normalize = SSENormalizeMultiplier(useSSE4, vec);
+	const __m128 result = _mm_mul_ps(normalize, vec);
+	const __m128 mask = _mm_cmpunord_ps(result, vec);
+	const __m128 replace = _mm_and_ps(_mm_set_ps(0.0f, 1.0f, 0.0f, 0.0f), mask);
+	// Replace with the constant if the mask matched.
+	return _mm_or_ps(_mm_andnot_ps(mask, result), replace);
+}
+#else
+template<>
+Vec3<float> Vec3<float>::Normalized(bool useSSE4) const
 {
 	return (*this) / Length();
 }
+
+template<>
+Vec3<float> Vec3<float>::NormalizedOr001(bool useSSE4) const {
+	float len = Length();
+	if (len == 0.0f) {
+		return Vec3<float>(0.0f, 0.0f, 1.0f);
+	}
+	return *this / len;
+}
+#endif
 
 template<>
 float Vec3<float>::Normalize()
 {
 	float len = Length();
 	(*this) = (*this)/len;
+	return len;
+}
+
+template<>
+float Vec3<float>::NormalizeOr001() {
+	float len = Length();
+	if (len == 0.0f) {
+		z = 1.0f;
+	} else {
+		*this /= len;
+	}
 	return len;
 }
 

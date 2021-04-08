@@ -23,33 +23,72 @@
 //
 // TODO: Make a test of nice unittest asserts and count successes etc.
 // Or just integrate with an existing testing framework.
+//
+// To use, set command line parameter to one or more of the tests below, or "all".
+// Search for "availableTests".
 
-
+#include "ppsspp_config.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <vector>
 #include <string>
 #include <sstream>
+#if PPSSPP_PLATFORM(ANDROID)
+#include <jni.h>
+#endif
 
-#include "base/NativeApp.h"
-#include "base/logging.h"
-#include "input/input_state.h"
+#include "Common/System/NativeApp.h"
+#include "Common/System/System.h"
+#include "Common/Input/InputState.h"
 #include "ext/disarm.h"
-#include "math/math_util.h"
-#include "util/text/parsers.h"
+#include "Common/Math/math_util.h"
+#include "Common/Data/Text/Parsers.h"
+#include "Common/Data/Encoding/Utf8.h"
 
-#include "Common/CPUDetect.h"
 #include "Common/ArmEmitter.h"
+#include "Common/BitScan.h"
+#include "Common/CPUDetect.h"
+#include "Common/Log.h"
 #include "Core/Config.h"
-#include "Core/MIPS/MIPSVFPUUtils.h"
 #include "Core/FileSystems/ISOFileSystem.h"
+#include "Core/MemMap.h"
+#include "Core/MIPS/MIPSVFPUUtils.h"
+#include "GPU/Common/TextureDecoder.h"
 
 #include "unittest/JitHarness.h"
 #include "unittest/TestVertexJit.h"
 #include "unittest/UnitTest.h"
 
+
 std::string System_GetProperty(SystemProperty prop) { return ""; }
-int System_GetPropertyInt(SystemProperty prop) { return -1; }
+std::vector<std::string> System_GetPropertyStringVec(SystemProperty prop) { return std::vector<std::string>(); }
+int System_GetPropertyInt(SystemProperty prop) {
+	return -1;
+}
+float System_GetPropertyFloat(SystemProperty prop) {
+	return -1;
+}
+bool System_GetPropertyBool(SystemProperty prop) {
+	switch (prop) {
+	case SYSPROP_CAN_JIT:
+		return true;
+	}
+	return false;
+}
+
+#if PPSSPP_PLATFORM(ANDROID)
+JNIEnv *getEnv() {
+	return nullptr;
+}
+
+jclass findClass(const char *name) {
+	return nullptr;
+}
+
+bool audioRecording_Available() { return false; }
+bool audioRecording_State() { return false; }
+#endif
 
 #ifndef M_PI_2
 #define M_PI_2     1.57079632679489661923
@@ -149,7 +188,7 @@ void fcs(float angle, float &sinout, float &cosout) {
 	int phasein = angle * (1 << BITSPERQUARTER);
 	// Modulo phase into quarter, convert to float 0..1
 	float modphase = (phasein & ((1<<BITSPERQUARTER)-1)) * (1.0f / (1<<BITSPERQUARTER));
-	// Extract quarter bits 
+	// Extract quarter bits
 	int quarter = phasein >> BITSPERQUARTER;
 	// Recognize quarter
 	if (!quarter) {
@@ -264,6 +303,8 @@ bool TestParsers() {
 
 bool TestVFPUSinCos() {
 	float sine, cosine;
+	InitVFPUSinCos(false);
+	EXPECT_FALSE(vfpu_sincos == nullptr);
 	vfpu_sincos(0.0f, sine, cosine);
 	EXPECT_EQ_FLOAT(sine, 0.0f);
 	EXPECT_EQ_FLOAT(cosine, 1.0f);
@@ -283,10 +324,19 @@ bool TestVFPUSinCos() {
 	EXPECT_APPROX_EQ_FLOAT(sine, 1.0f);
 	EXPECT_APPROX_EQ_FLOAT(cosine, 0.0f);
 
-	for (float angle = -10.0f; angle < 10.0f; angle++) {
+	vfpu_sincos(-1.0f, sine, cosine);
+	EXPECT_EQ_FLOAT(sine, -1.0f);
+	EXPECT_EQ_FLOAT(cosine, 0.0f);
+	vfpu_sincos(-2.0f, sine, cosine);
+	EXPECT_EQ_FLOAT(sine, 0.0f);
+	EXPECT_EQ_FLOAT(cosine, -1.0f);
+
+	for (float angle = -10.0f; angle < 10.0f; angle += 0.1f) {
 		vfpu_sincos(angle, sine, cosine);
 		EXPECT_APPROX_EQ_FLOAT(sine, sinf(angle * M_PI_2));
 		EXPECT_APPROX_EQ_FLOAT(cosine, cosf(angle * M_PI_2));
+
+		printf("sine: %f==%f cosine: %f==%f\n", sine, sinf(angle * M_PI_2), cosine, cosf(angle * M_PI_2));
 	}
 	return true;
 }
@@ -315,7 +365,7 @@ bool TestMatrixTranspose() {
 }
 
 void TestGetMatrix(int matrix, MatrixSize sz) {
-	ILOG("Testing matrix %s", GetMatrixNotation(matrix, sz));
+	INFO_LOG(SYSTEM, "Testing matrix %s", GetMatrixNotation(matrix, sz));
 	u8 fullMatrix[16];
 
 	u8 cols[4];
@@ -333,8 +383,8 @@ void TestGetMatrix(int matrix, MatrixSize sz) {
 		// int rowName = GetRowName(matrix, sz, i, 0);
 		int colName = cols[i];
 		int rowName = rows[i];
-		ILOG("Column %i: %s", i, GetVectorNotation(colName, vsz));
-		ILOG("Row %i: %s", i, GetVectorNotation(rowName, vsz));
+		INFO_LOG(SYSTEM, "Column %i: %s", i, GetVectorNotation(colName, vsz));
+		INFO_LOG(SYSTEM, "Row %i: %s", i, GetVectorNotation(rowName, vsz));
 
 		u8 colRegs[4];
 		u8 rowRegs[4];
@@ -355,12 +405,12 @@ void TestGetMatrix(int matrix, MatrixSize sz) {
 			c << (int)fullMatrix[j * 4 + i] << " ";
 			d << (int)rowRegs[j] << " ";
 		}
-		ILOG("Col: %s vs %s", a.str().c_str(), b.str().c_str());
+		INFO_LOG(SYSTEM, "Col: %s vs %s", a.str().c_str(), b.str().c_str());
 		if (a.str() != b.str())
-			ILOG("WRONG!");
-		ILOG("Row: %s vs %s", c.str().c_str(), d.str().c_str());
+			INFO_LOG(SYSTEM, "WRONG!");
+		INFO_LOG(SYSTEM, "Row: %s vs %s", c.str().c_str(), d.str().c_str());
 		if (c.str() != d.str())
-			ILOG("WRONG!");
+			INFO_LOG(SYSTEM, "WRONG!");
 	}
 }
 
@@ -396,6 +446,135 @@ bool TestParseLBN() {
 	return true;
 }
 
+// So we can use EXPECT_TRUE, etc.
+struct AlignedMem {
+	AlignedMem(size_t sz, size_t alignment = 16) {
+		p_ = AllocateAlignedMemory(sz, alignment);
+	}
+	~AlignedMem() {
+		FreeAlignedMemory(p_);
+	}
+
+	operator void *() {
+		return p_;
+	}
+
+	operator char *() {
+		return (char *)p_;
+	}
+
+private:
+	void *p_;
+};
+
+bool TestQuickTexHash() {
+	SetupTextureDecoder();
+
+	static const int BUF_SIZE = 1024;
+	AlignedMem buf(BUF_SIZE, 16);
+
+	memset(buf, 0, BUF_SIZE);
+	EXPECT_EQ_HEX(DoQuickTexHash(buf, BUF_SIZE), 0xaa756edc);
+
+	memset(buf, 1, BUF_SIZE);
+	EXPECT_EQ_HEX(DoQuickTexHash(buf, BUF_SIZE), 0x66f81b1c);
+
+	strncpy(buf, "hello", BUF_SIZE);
+	EXPECT_EQ_HEX(DoQuickTexHash(buf, BUF_SIZE), 0xf6028131);
+
+	strncpy(buf, "goodbye", BUF_SIZE);
+	EXPECT_EQ_HEX(DoQuickTexHash(buf, BUF_SIZE), 0xef81b54f);
+
+	// Simple patterns.
+	for (int i = 0; i < BUF_SIZE; ++i) {
+		char *p = buf;
+		p[i] = i & 0xFF;
+	}
+	EXPECT_EQ_HEX(DoQuickTexHash(buf, BUF_SIZE), 0x0d64531c);
+
+	int j = 573;
+	for (int i = 0; i < BUF_SIZE; ++i) {
+		char *p = buf;
+		j += ((i * 7) + (i & 3)) * 11;
+		p[i] = j & 0xFF;
+	}
+	EXPECT_EQ_HEX(DoQuickTexHash(buf, BUF_SIZE), 0x58de8dbc);
+
+	return true;
+}
+
+bool TestCLZ() {
+	static const uint32_t input[] = {
+		0xFFFFFFFF,
+		0x00FFFFF0,
+		0x00101000,
+		0x00003000,
+		0x00000001,
+		0x00000000,
+	};
+	static const uint32_t expected[] = {
+		0,
+		8,
+		11,
+		18,
+		31,
+		32,
+	};
+	for (int i = 0; i < ARRAY_SIZE(input); i++) {
+		EXPECT_EQ_INT(clz32(input[i]), expected[i]);
+	}
+	return true;
+}
+
+static bool TestMemMap() {
+	Memory::g_MemorySize = Memory::RAM_DOUBLE_SIZE;
+
+	enum class Flags {
+		NO_KERNEL = 0,
+		ALLOW_KERNEL = 1,
+	};
+	struct Range {
+		uint32_t base;
+		uint32_t size;
+		Flags flags;
+	};
+	static const Range ranges[] = {
+		{ 0x08000000, Memory::RAM_DOUBLE_SIZE, Flags::ALLOW_KERNEL },
+		{ 0x00010000, Memory::SCRATCHPAD_SIZE, Flags::NO_KERNEL },
+		{ 0x04000000, 0x00800000, Flags::NO_KERNEL },
+	};
+	static const uint32_t extraBits[] = {
+		0x00000000,
+		0x40000000,
+		0x80000000,
+	};
+
+	for (const auto &range : ranges) {
+		size_t testBits = range.flags == Flags::ALLOW_KERNEL ? 3 : 2;
+		for (size_t i = 0; i < testBits; ++i) {
+			uint32_t base = range.base | extraBits[i];
+
+			EXPECT_TRUE(Memory::IsValidAddress(base));
+			EXPECT_TRUE(Memory::IsValidAddress(base + range.size - 1));
+			EXPECT_FALSE(Memory::IsValidAddress(base + range.size));
+			EXPECT_FALSE(Memory::IsValidAddress(base - 1));
+
+			EXPECT_EQ_HEX(Memory::ValidSize(base, range.size), range.size);
+			EXPECT_EQ_HEX(Memory::ValidSize(base, range.size + 1), range.size);
+			EXPECT_EQ_HEX(Memory::ValidSize(base, range.size - 1), range.size - 1);
+			EXPECT_EQ_HEX(Memory::ValidSize(base, 0), 0);
+			EXPECT_EQ_HEX(Memory::ValidSize(base, 0x80000001), range.size);
+			EXPECT_EQ_HEX(Memory::ValidSize(base, 0x40000001), range.size);
+			EXPECT_EQ_HEX(Memory::ValidSize(base, 0x20000001), range.size);
+			EXPECT_EQ_HEX(Memory::ValidSize(base, 0x10000001), range.size);
+
+			EXPECT_EQ_HEX(Memory::ValidSize(base + range.size - 0x10, 0x20000001), 0x10);
+		}
+	}
+
+	return true;
+}
+
 typedef bool (*TestFunc)();
 struct TestItem {
 	const char *name;
@@ -407,15 +586,16 @@ struct TestItem {
 bool TestArmEmitter();
 bool TestArm64Emitter();
 bool TestX64Emitter();
+bool TestShaderGenerators();
 
 TestItem availableTests[] = {
-#if defined(ARM64) || defined(_M_X64) || defined(_M_IX86)
+#if PPSSPP_ARCH(ARM64) || PPSSPP_ARCH(AMD64) || PPSSPP_ARCH(X86)
 	TEST_ITEM(Arm64Emitter),
 #endif
-#if defined(ARM) || defined(_M_X64) || defined(_M_IX86)
+#if PPSSPP_ARCH(ARM) || PPSSPP_ARCH(AMD64) || PPSSPP_ARCH(X86)
 	TEST_ITEM(ArmEmitter),
 #endif
-#if defined(_M_X64) || defined(_M_IX86)
+#if PPSSPP_ARCH(AMD64) || PPSSPP_ARCH(X86)
 	TEST_ITEM(X64Emitter),
 #endif
 	TEST_ITEM(VertexJit),
@@ -427,6 +607,10 @@ TestItem availableTests[] = {
 	TEST_ITEM(Jit),
 	TEST_ITEM(MatrixTranspose),
 	TEST_ITEM(ParseLBN),
+	TEST_ITEM(QuickTexHash),
+	TEST_ITEM(CLZ),
+	TEST_ITEM(MemMap),
+	TEST_ITEM(ShaderGenerators),
 };
 
 int main(int argc, const char *argv[]) {

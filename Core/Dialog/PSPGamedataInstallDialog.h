@@ -35,7 +35,7 @@ struct SceUtilityGamedataInstallParam {
 
 class PSPGamedataInstallDialog: public PSPDialog {
 public:
-	PSPGamedataInstallDialog();
+	PSPGamedataInstallDialog(UtilityDialogType type);
 	virtual ~PSPGamedataInstallDialog();
 
 	virtual int Init(u32 paramAddr);
@@ -45,6 +45,12 @@ public:
 
 	int Abort();
 	std::string GetGameDataInstallFileName(SceUtilityGamedataInstallParam *param, std::string filename);
+
+protected:
+	// TODO: Manage status correctly.
+	bool UseAutoStatus() override {
+		return true;
+	}
 
 private:
 	void UpdateProgress();
@@ -62,7 +68,7 @@ private:
 	u64 allReadSize;   // use this to calculate progress value.
 	int progressValue;
 
-	u32 currentInputFile;
+	int currentInputFile;
 	u32 currentInputBytesLeft;
-	u32 currentOutputFile;
+	int currentOutputFile;
 };

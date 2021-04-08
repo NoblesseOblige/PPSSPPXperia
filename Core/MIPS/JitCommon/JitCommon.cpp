@@ -15,12 +15,16 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "ppsspp_config.h"
 #include <cstdlib>
 
 #include "ext/disarm.h"
 #include "ext/udis86/udis86.h"
 
 #include "Common/StringUtils.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+
 #include "Core/Util/DisArm64.h"
 #include "Core/Config.h"
 
@@ -46,22 +50,36 @@ namespace MIPSComp {
 		jit->Compile(currentMIPS->pc);
 	}
 
-	JitInterface *CreateNativeJit(MIPSState *mips) {
+	void DoDummyJitState(PointerWrap &p) {
+		// This is here so the savestate matches between jit and non-jit.
+		auto s = p.Section("Jit", 1, 2);
+		if (!s)
+			return;
+
+		bool dummy = false;
+		Do(p, dummy);
+		if (s >= 2) {
+			dummy = true;
+			Do(p, dummy);
+		}
+	}
+
+	JitInterface *CreateNativeJit(MIPSState *mipsState) {
 #if PPSSPP_ARCH(ARM)
-		return new MIPSComp::ArmJit(mips);
+		return new MIPSComp::ArmJit(mipsState);
 #elif PPSSPP_ARCH(ARM64)
-		return new MIPSComp::Arm64Jit(mips);
+		return new MIPSComp::Arm64Jit(mipsState);
 #elif PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)
-		return new MIPSComp::Jit(mips);
+		return new MIPSComp::Jit(mipsState);
 #elif PPSSPP_ARCH(MIPS)
-		return new MIPSComp::MipsJit(mips);
+		return new MIPSComp::MipsJit(mipsState);
 #else
-		return new MIPSComp::FakeJit(mips);
+		return new MIPSComp::FakeJit(mipsState);
 #endif
 	}
 
 }
-#if PPSSPP_PLATFORM(WINDOWS)
+#if PPSSPP_PLATFORM(WINDOWS) && !defined(__LIBRETRO__)
 #define DISASM_ALL 1
 #endif
 
@@ -95,14 +113,14 @@ std::vector<std::string> DisassembleArm2(const u8 *data, int size) {
 			bkpt_count++;
 		} else {
 			if (bkpt_count) {
-				lines.push_back(StringFromFormat("BKPT 1 (x%i)", bkpt_count));
+				lines.push_back(StringFromFormat("BKPT 1 (x%d)", bkpt_count));
 				bkpt_count = 0;
 			}
 			lines.push_back(buf);
 		}
 	}
 	if (bkpt_count) {
-		lines.push_back(StringFromFormat("BKPT 1 (x%i)", bkpt_count));
+		lines.push_back(StringFromFormat("BKPT 1 (x%d)", bkpt_count));
 	}
 	return lines;
 }
@@ -157,7 +175,7 @@ std::vector<std::string> DisassembleArm64(const u8 *data, int size) {
 			bkpt_count++;
 		} else {
 			if (bkpt_count) {
-				lines.push_back(StringFromFormat("BKPT 1 (x%i)", bkpt_count));
+				lines.push_back(StringFromFormat("BKPT 1 (x%d)", bkpt_count));
 				bkpt_count = 0;
 			}
 			if (true) {
@@ -167,7 +185,7 @@ std::vector<std::string> DisassembleArm64(const u8 *data, int size) {
 		}
 	}
 	if (bkpt_count) {
-		lines.push_back(StringFromFormat("BKPT 1 (x%i)", bkpt_count));
+		lines.push_back(StringFromFormat("BKPT 1 (x%d)", bkpt_count));
 	}
 	return lines;
 }
@@ -230,19 +248,24 @@ std::vector<std::string> DisassembleX86(const u8 *data, int size) {
 
 	int int3_count = 0;
 	while (ud_disassemble(&ud_obj) != 0) {
-		std::string str = ud_insn_asm(&ud_obj);
+		const char *buf = ud_insn_asm(&ud_obj);
+		if (!buf) {
+			lines.push_back("[bad]");
+			continue;
+		}
+		std::string str = buf;
 		if (str == "int3") {
 			int3_count++;
 		} else {
 			if (int3_count) {
-				lines.push_back(StringFromFormat("int3 (x%i)", int3_count));
+				lines.push_back(StringFromFormat("int3 (x%d)", int3_count));
 				int3_count = 0;
 			}
 			lines.push_back(str);
 		}
 	}
 	if (int3_count) {
-		lines.push_back(StringFromFormat("int3 (x%i)", int3_count));
+		lines.push_back(StringFromFormat("int3 (x%d)", int3_count));
 	}
 	return lines;
 }

@@ -66,12 +66,13 @@
 #pragma GCC diagnostic ignored "-Wstring-plus-int"
 #endif
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "ppsspp_config.h"
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
-#include "base/basictypes.h"
 #include "Common/ArmEmitter.h"
+#include "ext/disarm.h"
 
 static const char *CCFlagsStr[] = {
 	"EQ", // Equal
@@ -132,7 +133,7 @@ int GetVm(uint32_t op, bool quad = false, bool dbl = false) {
 // Horrible array of hacks but hey. Can be cleaned up later.
 
 bool DisasmVFP(uint32_t op, char *text) {
-#if defined(__ANDROID__) && defined(_M_IX86)
+#if defined(__ANDROID__) && PPSSPP_ARCH(X86)
 	// Prevent linking errors with ArmEmitter which I've excluded on x86 android.
 	strcpy(text, "ARM disasm not available");
 #else
@@ -759,30 +760,14 @@ static bool DisasmNeon(uint32_t op, char *text) {
 	return false;
 }
 
+bool ArmAnalyzeLoadStore(uint32_t addr, uint32_t op, ArmLSInstructionInfo *info) {
+	*info = {};
+	info->instructionSize = 4;
 
+	// TODO
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+	return false;
+}
 
 
 typedef unsigned int word;

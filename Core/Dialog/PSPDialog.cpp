@@ -15,32 +15,43 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include "i18n/i18n.h"
+#include "Common/Data/Text/I18n.h"
 
-#include "Common/ChunkFile.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/StringUtils.h"
 #include "Core/CoreTiming.h"
-#include "Core/HLE/sceCtrl.h"
-#include "Core/Util/PPGeDraw.h"
 #include "Core/Dialog/PSPDialog.h"
+#include "Core/HLE/sceCtrl.h"
+#include "Core/HLE/scePower.h"
+#include "Core/HLE/sceUtility.h"
+#include "Core/MemMapHelpers.h"
+#include "Core/Util/PPGeDraw.h"
 
 #define FADE_TIME 1.0
 const float FONT_SCALE = 0.55f;
 
-PSPDialog::PSPDialog()
-	: status(SCE_UTILITY_STATUS_NONE), pendingStatus(SCE_UTILITY_STATUS_NONE),
-	  pendingStatusTicks(0), lastButtons(0), buttons(0)
-{
-
+PSPDialog::PSPDialog(UtilityDialogType type) : dialogType_(type) {
 }
 
 PSPDialog::~PSPDialog() {
 }
 
-PSPDialog::DialogStatus PSPDialog::GetStatus()
-{
+PSPDialog::DialogStatus PSPDialog::GetStatus() {
 	if (pendingStatusTicks != 0 && CoreTiming::GetTicks() >= pendingStatusTicks) {
-		status = pendingStatus;
-		pendingStatusTicks = 0;
+		bool changeAllowed = true;
+		if (pendingStatus == SCE_UTILITY_STATUS_NONE && status == SCE_UTILITY_STATUS_SHUTDOWN) {
+			FinishVolatile();
+		} else if (pendingStatus == SCE_UTILITY_STATUS_RUNNING && status == SCE_UTILITY_STATUS_INITIALIZE) {
+			if (!volatileLocked_) {
+				volatileLocked_ = KernelVolatileMemLock(0, 0, 0) == 0;
+				changeAllowed = volatileLocked_;
+			}
+		}
+		if (changeAllowed) {
+			status = pendingStatus;
+			pendingStatusTicks = 0;
+		}
 	}
 
 	PSPDialog::DialogStatus retval = status;
@@ -55,12 +66,38 @@ PSPDialog::DialogStatus PSPDialog::GetStatus()
 
 void PSPDialog::ChangeStatus(DialogStatus newStatus, int delayUs) {
 	if (delayUs <= 0) {
+		if (newStatus == SCE_UTILITY_STATUS_NONE && status == SCE_UTILITY_STATUS_SHUTDOWN) {
+			FinishVolatile();
+		} else if (newStatus == SCE_UTILITY_STATUS_RUNNING && status == SCE_UTILITY_STATUS_INITIALIZE) {
+			if (!volatileLocked_) {
+				// TODO: Should probably make the status pending instead?
+				volatileLocked_ = KernelVolatileMemLock(0, 0, 0) == 0;
+			}
+		}
 		status = newStatus;
 		pendingStatusTicks = 0;
 	} else {
 		pendingStatus = newStatus;
 		pendingStatusTicks = CoreTiming::GetTicks() + usToCycles(delayUs);
 	}
+}
+
+void PSPDialog::FinishVolatile() {
+	if (!volatileLocked_)
+		return;
+
+	if (KernelVolatileMemUnlock(0) == 0) {
+		volatileLocked_ = false;
+		// Simulate modifications to volatile memory.
+		Memory::Memset(PSP_GetVolatileMemoryStart(), 0, PSP_GetVolatileMemoryEnd() - PSP_GetVolatileMemoryStart());
+	}
+}
+
+int PSPDialog::FinishShutdown() {
+	if (ReadStatus() != SCE_UTILITY_STATUS_SHUTDOWN)
+		return -1;
+	ChangeStatus(SCE_UTILITY_STATUS_NONE, 0);
+	return 0;
 }
 
 void PSPDialog::ChangeStatusInit(int delayUs) {
@@ -70,7 +107,11 @@ void PSPDialog::ChangeStatusInit(int delayUs) {
 
 void PSPDialog::ChangeStatusShutdown(int delayUs) {
 	status = SCE_UTILITY_STATUS_SHUTDOWN;
-	ChangeStatus(SCE_UTILITY_STATUS_NONE, delayUs);
+	auto params = GetCommonParam();
+	if (params)
+		UtilityDialogShutdown(DialogType(), delayUs, params->accessThread);
+	else
+		ChangeStatus(SCE_UTILITY_STATUS_NONE, delayUs);
 }
 
 void PSPDialog::StartDraw()
@@ -130,29 +171,39 @@ u32 PSPDialog::CalcFadedColor(u32 inColor)
 	return (inColor & 0x00FFFFFF) | (alpha << 24);
 }
 
-void PSPDialog::DoState(PointerWrap &p)
-{
-	auto s = p.Section("PSPDialog", 1, 2);
+void PSPDialog::DoState(PointerWrap &p) {
+	auto s = p.Section("PSPDialog", 1, 3);
 	if (!s)
 		return;
 
-	p.Do(status);
-	p.Do(lastButtons);
-	p.Do(buttons);
-	p.Do(fadeTimer);
-	p.Do(isFading);
-	p.Do(fadeIn);
-	p.Do(fadeValue);
-	p.Do(okButtonImg);
-	p.Do(cancelButtonImg);
-	p.Do(okButtonFlag);
-	p.Do(cancelButtonFlag);
+	Do(p, status);
+	Do(p, lastButtons);
+	Do(p, buttons);
+	Do(p, fadeTimer);
+	Do(p, isFading);
+	Do(p, fadeIn);
+	Do(p, fadeValue);
+
+	// I don't think we should save these two... Let's just ignore them for now for compat.
+	int okButtonImg = 0;
+	Do(p, okButtonImg);
+	int cancelButtonImg = 0;
+	Do(p, cancelButtonImg);
+
+	Do(p, okButtonFlag);
+	Do(p, cancelButtonFlag);
 
 	if (s >= 2) {
-		p.Do(pendingStatus);
-		p.Do(pendingStatusTicks);
+		Do(p, pendingStatus);
+		Do(p, pendingStatusTicks);
 	} else {
 		pendingStatusTicks = 0;
+	}
+
+	if (s >= 3) {
+		Do(p, volatileLocked_);
+	} else {
+		volatileLocked_ = false;
 	}
 }
 
@@ -192,16 +243,34 @@ bool PSPDialog::IsButtonHeld(int checkButton, int &framesHeld, int framesHeldThr
 	return false;
 }
 
+PPGeStyle PSPDialog::FadedStyle(PPGeAlign align, float scale) {
+	PPGeStyle textStyle;
+	textStyle.align = align;
+	textStyle.scale = scale;
+	textStyle.color = CalcFadedColor(textStyle.color);
+	textStyle.hasShadow = true;
+	textStyle.shadowColor = CalcFadedColor(textStyle.shadowColor);
+	return textStyle;
+}
+
+PPGeImageStyle PSPDialog::FadedImageStyle() {
+	PPGeImageStyle style;
+	style.color = CalcFadedColor(style.color);
+	return style;
+}
+
 void PSPDialog::DisplayButtons(int flags, const char *caption)
 {
 	bool useCaption = false;
 	char safeCaption[65] = {0};
 	if (caption != NULL && *caption != '\0') {
 		useCaption = true;
-		strncpy(safeCaption, caption, 64);
+		truncate_cpy(safeCaption, caption);
 	}
 
-	I18NCategory *di = GetI18NCategory("Dialog");
+	PPGeStyle textStyle = FadedStyle(PPGeAlign::BOX_LEFT, FONT_SCALE);
+
+	auto di = GetI18NCategory("Dialog");
 	float x1 = 183.5f, x2 = 261.5f;
 	if (GetCommonParam()->buttonSwap == 1) {
 		x1 = 261.5f;
@@ -209,16 +278,12 @@ void PSPDialog::DisplayButtons(int flags, const char *caption)
 	}
 	if (flags & DS_BUTTON_OK) {
 		const char *text = useCaption ? safeCaption : di->T("Enter");
-		PPGeDrawImage(okButtonImg, x2, 258, 11.5f, 11.5f, 0, CalcFadedColor(0x80000000));
-		PPGeDrawImage(okButtonImg, x2, 256, 11.5f, 11.5f, 0, CalcFadedColor(0xFFFFFFFF));
-		PPGeDrawText(text, x2 + 15.5f, 254, PPGE_ALIGN_LEFT, FONT_SCALE, CalcFadedColor(0x80000000));
-		PPGeDrawText(text, x2 + 14.5f, 252, PPGE_ALIGN_LEFT, FONT_SCALE, CalcFadedColor(0xFFFFFFFF));
+		PPGeDrawImage(okButtonImg, x2, 256, 11.5f, 11.5f, textStyle);
+		PPGeDrawText(text, x2 + 14.5f, 252, textStyle);
 	}
 	if (flags & DS_BUTTON_CANCEL) {
 		const char *text = useCaption ? safeCaption : di->T("Back");
-		PPGeDrawText(text, x1 + 15.5f, 254, PPGE_ALIGN_LEFT, FONT_SCALE, CalcFadedColor(0x80000000));
-		PPGeDrawText(text, x1 + 14.5f, 252, PPGE_ALIGN_LEFT, FONT_SCALE, CalcFadedColor(0xFFFFFFFF));
-		PPGeDrawImage(cancelButtonImg, x1, 258, 11.5f, 11.5f, 0, CalcFadedColor(0x80000000));
-		PPGeDrawImage(cancelButtonImg, x1, 256, 11.5f, 11.5f, 0, CalcFadedColor(0xFFFFFFFF));
+		PPGeDrawImage(cancelButtonImg, x1, 256, 11.5f, 11.5f, textStyle);
+		PPGeDrawText(text, x1 + 14.5f, 252, textStyle);
 	}
 }

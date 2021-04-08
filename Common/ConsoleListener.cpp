@@ -15,8 +15,9 @@
 // Official SVN repository and contact information can be found at
 // http://code.google.com/p/dolphin-emu/
 
-
+#include <atomic>
 #include <algorithm>  // min
+#include <cstring>
 #include <string> // System: To be able to add strings with "+"
 #include <math.h>
 #ifdef _WIN32
@@ -26,12 +27,16 @@
 #else
 #include <stdarg.h>
 #endif
+#ifndef _MSC_VER
+#include <unistd.h>
+#endif
 
-#include "thread/threadutil.h"
-#include "util/text/utf8.h"
-#include "Common.h"
-#include "ConsoleListener.h" // Common
-#include "Atomics.h"
+#include "ppsspp_config.h"
+#include "Common/Thread/ThreadUtil.h"
+#include "Common/Data/Encoding/Utf8.h"
+#include "Common/Common.h"
+#include "Common/ConsoleListener.h"
+#include "Common/StringUtils.h"
 
 #if defined(USING_WIN_UI)
 const int LOG_PENDING_MAX = 120 * 10000;
@@ -45,8 +50,8 @@ HANDLE ConsoleListener::hTriggerEvent = NULL;
 CRITICAL_SECTION ConsoleListener::criticalSection;
 
 char *ConsoleListener::logPending = NULL;
-volatile u32 ConsoleListener::logPendingReadPos = 0;
-volatile u32 ConsoleListener::logPendingWritePos = 0;
+std::atomic<uint32_t> ConsoleListener::logPendingReadPos;
+std::atomic<uint32_t> ConsoleListener::logPendingWritePos;
 #endif
 
 ConsoleListener::ConsoleListener() : bHidden(true)
@@ -54,15 +59,15 @@ ConsoleListener::ConsoleListener() : bHidden(true)
 #if defined(USING_WIN_UI)
 	hConsole = NULL;
 	bUseColor = true;
-
-	if (hTriggerEvent == NULL)
-	{
+	if (hTriggerEvent == NULL) {
 		hTriggerEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
 		InitializeCriticalSection(&criticalSection);
 		logPending = new char[LOG_PENDING_MAX];
 	}
 	++refCount;
-#elif defined(_WIN32)
+#elif PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS) || PPSSPP_PLATFORM(UWP) || PPSSPP_PLATFORM(SWITCH)
+	bUseColor = false;
+#elif defined(_MSC_VER)
 	bUseColor = false;
 #else
 	bUseColor = isatty(fileno(stdout));
@@ -74,7 +79,7 @@ ConsoleListener::~ConsoleListener()
 	Close();
 }
 
-#ifdef _WIN32
+#if defined(_WIN32)
 // Handle console event
 bool WINAPI ConsoleHandler(DWORD msgType)
 {
@@ -133,6 +138,7 @@ void ConsoleListener::Open()
 		// Set the console window title
 		SetConsoleTitle(title_.c_str());
 		SetConsoleCP(CP_UTF8);
+		SetConsoleOutputCP(CP_UTF8);
 
 		// Set letter space
 		LetterSpace(openWidth_, LOG_MAX_DISPLAY_LINES);
@@ -178,14 +184,12 @@ void ConsoleListener::UpdateHandle()
 void ConsoleListener::Close()
 {
 #if defined(USING_WIN_UI)
-	if (hConsole == NULL)
-		return;
 
 	if (--refCount <= 0)
 	{
 		if (hThread != NULL)
 		{
-			Common::AtomicStoreRelease(logPendingWritePos, (u32) -1);
+			logPendingWritePos.store((u32)-1, std::memory_order_release);
 
 			SetEvent(hTriggerEvent);
 			WaitForSingleObject(hThread, LOG_SHUTDOWN_DELAY_MS);
@@ -206,8 +210,10 @@ void ConsoleListener::Close()
 		refCount = 0;
 	}
 
-	FreeConsole();
-	hConsole = NULL;
+	if (hConsole != NULL) {
+		FreeConsole();
+		hConsole = NULL;
+	}
 #else
 	fflush(NULL);
 #endif
@@ -228,7 +234,7 @@ bool ConsoleListener::IsOpen()
 */
 void ConsoleListener::BufferWidthHeight(int BufferWidth, int BufferHeight, int ScreenWidth, int ScreenHeight, bool BufferFirst)
 {
-	_dbg_assert_msg_(COMMON, IsOpen(), "Don't call this before opening the console.");
+	_dbg_assert_msg_(IsOpen(), "Don't call this before opening the console.");
 #if defined(USING_WIN_UI)
 	BOOL SB, SW;
 	if (BufferFirst)
@@ -253,7 +259,7 @@ void ConsoleListener::BufferWidthHeight(int BufferWidth, int BufferHeight, int S
 }
 void ConsoleListener::LetterSpace(int Width, int Height)
 {
-	_dbg_assert_msg_(COMMON, IsOpen(), "Don't call this before opening the console.");
+	_dbg_assert_msg_(IsOpen(), "Don't call this before opening the console.");
 #if defined(USING_WIN_UI)
 	// Get console info
 	CONSOLE_SCREEN_BUFFER_INFO ConInfo;
@@ -310,7 +316,7 @@ void ConsoleListener::LogWriterThread()
 		WaitForSingleObject(hTriggerEvent, INFINITE);
 		Sleep(LOG_LATENCY_DELAY_MS);
 
-		u32 logRemotePos = Common::AtomicLoadAcquire(logPendingWritePos);
+		u32 logRemotePos = logPendingWritePos.load(std::memory_order_acquire);
 		if (logRemotePos == (u32) -1)
 			break;
 		else if (logRemotePos == logPendingReadPos)
@@ -318,7 +324,7 @@ void ConsoleListener::LogWriterThread()
 		else
 		{
 			EnterCriticalSection(&criticalSection);
-			logRemotePos = Common::AtomicLoadAcquire(logPendingWritePos);
+			logRemotePos = logPendingWritePos.load(std::memory_order_acquire);
 
 			int start = 0;
 			if (logRemotePos < logPendingReadPos)
@@ -388,12 +394,12 @@ void ConsoleListener::SendToThread(LogTypes::LOG_LEVELS Level, const char *Text)
 		// Not ANSI, since the console doesn't support it, but ANSI-like.
 		snprintf(ColorAttr, 16, "\033%d", Level);
 		// For now, rather than properly support it.
-		_dbg_assert_msg_(COMMON, strlen(ColorAttr) == 2, "Console logging doesn't support > 9 levels.");
+		_dbg_assert_msg_(strlen(ColorAttr) == 2, "Console logging doesn't support > 9 levels.");
 		ColorLen = (int)strlen(ColorAttr);
 	}
 
 	EnterCriticalSection(&criticalSection);
-	u32 logWritePos = Common::AtomicLoad(logPendingWritePos);
+	u32 logWritePos = logPendingWritePos.load();
 	u32 prevLogWritePos = logWritePos;
 	if (logWritePos + ColorLen + Len >= LOG_PENDING_MAX)
 	{
@@ -443,7 +449,7 @@ void ConsoleListener::SendToThread(LogTypes::LOG_LEVELS Level, const char *Text)
 		return;
 	}
 
-	Common::AtomicStoreRelease(logPendingWritePos, logWritePos);
+	logPendingWritePos.store(logWritePos, std::memory_order::memory_order_release);
 	LeaveCriticalSection(&criticalSection);
 
 	SetEvent(hTriggerEvent);
@@ -451,7 +457,7 @@ void ConsoleListener::SendToThread(LogTypes::LOG_LEVELS Level, const char *Text)
 
 void ConsoleListener::WriteToConsole(LogTypes::LOG_LEVELS Level, const char *Text, size_t Len)
 {
-	_dbg_assert_msg_(COMMON, IsOpen(), "Don't call this before opening the console.");
+	_dbg_assert_msg_(IsOpen(), "Don't call this before opening the console.");
 
 	/*
 	const int MAX_BYTES = 1024*10;
@@ -500,19 +506,17 @@ void ConsoleListener::WriteToConsole(LogTypes::LOG_LEVELS Level, const char *Tex
 	SetConsoleTextAttribute(hConsole, Color);
 	int wlen = MultiByteToWideChar(CP_UTF8, 0, Text, (int)Len, NULL, NULL);
 	MultiByteToWideChar(CP_UTF8, 0, Text, (int)Len, tempBuf, wlen);
-	WriteConsole(hConsole, tempBuf, (DWORD)Len, &cCharsWritten, NULL);
+	WriteConsole(hConsole, tempBuf, (DWORD)wlen, &cCharsWritten, NULL);
 }
 #endif
 
 void ConsoleListener::PixelSpace(int Left, int Top, int Width, int Height, bool Resize)
 {
-	_dbg_assert_msg_(COMMON, IsOpen(), "Don't call this before opening the console.");
+	_dbg_assert_msg_(IsOpen(), "Don't call this before opening the console.");
 #if defined(USING_WIN_UI)
 	// Check size
 	if (Width < 8 || Height < 12) return;
 
-	bool DBef = true;
-	bool DAft = true;
 	std::string SLog = "";
 
 	// Get console info
@@ -582,20 +586,24 @@ void ConsoleListener::PixelSpace(int Left, int Top, int Width, int Height, bool 
 	COORD Coo = GetCoordinates(OldCursor, LBufWidth);
 	SetConsoleCursorPosition(hConsole, Coo);
 
-	if (SLog.length() > 0) Log(LogTypes::LNOTICE, SLog.c_str());
+	// if (SLog.length() > 0) Log(LogTypes::LNOTICE, SLog.c_str());
 
 	// Resize the window too
 	if (Resize) MoveWindow(GetConsoleWindow(), Left,Top, (Width + 100),Height, true);
 #endif
 }
 
-void ConsoleListener::Log(LogTypes::LOG_LEVELS Level, const char *Text)
-{
+void ConsoleListener::Log(const LogMessage &msg) {
+	char Text[2048];
+	snprintf(Text, sizeof(Text), "%s %s %s", msg.timestamp, msg.header, msg.msg.c_str());
+	Text[sizeof(Text) - 2] = '\n';
+	Text[sizeof(Text) - 1] = '\0';
+
 #if defined(USING_WIN_UI)
 	if (hThread == NULL && IsOpen())
-		WriteToConsole(Level, Text, strlen(Text));
+		WriteToConsole(msg.level, Text, strlen(Text));
 	else
-		SendToThread(Level, Text);
+		SendToThread(msg.level, Text);
 #else
 	char ColorAttr[16] = "";
 	char ResetAttr[16] = "";
@@ -603,7 +611,7 @@ void ConsoleListener::Log(LogTypes::LOG_LEVELS Level, const char *Text)
 	if (bUseColor)
 	{
 		strcpy(ResetAttr, "\033[0m");
-		switch (Level)
+		switch (msg.level)
 		{
 		case NOTICE_LEVEL: // light green
 			strcpy(ColorAttr, "\033[92m");
@@ -624,7 +632,7 @@ void ConsoleListener::Log(LogTypes::LOG_LEVELS Level, const char *Text)
 // Clear console screen
 void ConsoleListener::ClearScreen(bool Cursor)
 { 
-	_dbg_assert_msg_(COMMON, IsOpen(), "Don't call this before opening the console.");
+	_dbg_assert_msg_(IsOpen(), "Don't call this before opening the console.");
 #if defined(USING_WIN_UI)
 	COORD coordScreen = { 0, 0 }; 
 	DWORD cCharsWritten; 

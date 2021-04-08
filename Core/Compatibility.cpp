@@ -15,7 +15,9 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include "file/ini_file.h"
+#include <cstring>
+
+#include "Common/Data/Format/IniFile.h"
 #include "Core/Compatibility.h"
 #include "Core/System.h"
 
@@ -45,11 +47,41 @@ void Compatibility::Clear() {
 }
 
 void Compatibility::CheckSettings(IniFile &iniFile, const std::string &gameID) {
-	CheckSetting(iniFile, gameID, "VertexDepthRounding", flags_.VertexDepthRounding);
-	CheckSetting(iniFile, gameID, "PixelDepthRounding", flags_.PixelDepthRounding);
-	CheckSetting(iniFile, gameID, "DepthRangeHack", flags_.DepthRangeHack);
+	CheckSetting(iniFile, gameID, "VertexDepthRounding", &flags_.VertexDepthRounding);
+	CheckSetting(iniFile, gameID, "PixelDepthRounding", &flags_.PixelDepthRounding);
+	CheckSetting(iniFile, gameID, "DepthRangeHack", &flags_.DepthRangeHack);
+	CheckSetting(iniFile, gameID, "ClearToRAM", &flags_.ClearToRAM);
+	CheckSetting(iniFile, gameID, "Force04154000Download", &flags_.Force04154000Download);
+	CheckSetting(iniFile, gameID, "DrawSyncEatCycles", &flags_.DrawSyncEatCycles);
+	CheckSetting(iniFile, gameID, "FakeMipmapChange", &flags_.FakeMipmapChange);
+	CheckSetting(iniFile, gameID, "RequireBufferedRendering", &flags_.RequireBufferedRendering);
+	CheckSetting(iniFile, gameID, "RequireBlockTransfer", &flags_.RequireBlockTransfer);
+	CheckSetting(iniFile, gameID, "RequireDefaultCPUClock", &flags_.RequireDefaultCPUClock);
+	CheckSetting(iniFile, gameID, "DisableReadbacks", &flags_.DisableReadbacks);
+	CheckSetting(iniFile, gameID, "DisableAccurateDepth", &flags_.DisableAccurateDepth);
+	CheckSetting(iniFile, gameID, "MGS2AcidHack", &flags_.MGS2AcidHack);
+	CheckSetting(iniFile, gameID, "SonicRivalsHack", &flags_.SonicRivalsHack);
+	CheckSetting(iniFile, gameID, "BlockTransferAllowCreateFB", &flags_.BlockTransferAllowCreateFB);
+	CheckSetting(iniFile, gameID, "IntraVRAMBlockTransferAllowCreateFB", &flags_.IntraVRAMBlockTransferAllowCreateFB);
+	CheckSetting(iniFile, gameID, "YugiohSaveFix", &flags_.YugiohSaveFix);
+	CheckSetting(iniFile, gameID, "ForceUMDDelay", &flags_.ForceUMDDelay);
+	CheckSetting(iniFile, gameID, "ForceMax60FPS", &flags_.ForceMax60FPS);
+	CheckSetting(iniFile, gameID, "JitInvalidationHack", &flags_.JitInvalidationHack);
+	CheckSetting(iniFile, gameID, "HideISOFiles", &flags_.HideISOFiles);
+	CheckSetting(iniFile, gameID, "MoreAccurateVMMUL", &flags_.MoreAccurateVMMUL);
+	CheckSetting(iniFile, gameID, "ForceSoftwareRenderer", &flags_.ForceSoftwareRenderer);
+	CheckSetting(iniFile, gameID, "DarkStalkersPresentHack", &flags_.DarkStalkersPresentHack);
+	CheckSetting(iniFile, gameID, "ReportSmallMemstick", &flags_.ReportSmallMemstick);
+	CheckSetting(iniFile, gameID, "MemstickFixedFree", &flags_.MemstickFixedFree);
+	CheckSetting(iniFile, gameID, "DateLimited", &flags_.DateLimited);
+	CheckSetting(iniFile, gameID, "ReinterpretFramebuffers", &flags_.ReinterpretFramebuffers);
+	CheckSetting(iniFile, gameID, "DoublePrecisionSinCos", &flags_.DoublePrecisionSinCos);
+	CheckSetting(iniFile, gameID, "ShaderColorBitmask", &flags_.ShaderColorBitmask);
+	CheckSetting(iniFile, gameID, "DisableFirstFrameReadback", &flags_.DisableFirstFrameReadback);
+	CheckSetting(iniFile, gameID, "DisableRangeCulling", &flags_.DisableRangeCulling);
+	CheckSetting(iniFile, gameID, "MpegAvcWarmUp", &flags_.MpegAvcWarmUp);
 }
 
-void Compatibility::CheckSetting(IniFile &iniFile, const std::string &gameID, const char *option, bool &flag) {
-	iniFile.Get(option, gameID.c_str(), &flag, flag);
+void Compatibility::CheckSetting(IniFile &iniFile, const std::string &gameID, const char *option, bool *flag) {
+	iniFile.Get(option, gameID.c_str(), flag, *flag);
 }

@@ -17,18 +17,17 @@
 
 #ifdef _WIN32
 #include "Common/CommonWindows.h"
-#ifndef _XBOX
  // timeval already defined in xtl.h
 #include <Winsock2.h>
-#endif
 #else
 #include <sys/time.h>
 #endif
 
 #include <time.h>
-#include "base/timeutil.h"
 
-#include "Common/ChunkFile.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/TimeUtil.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/MIPS/MIPS.h"
@@ -38,6 +37,13 @@
 
 #include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceRtc.h"
+
+#ifdef HAVE_LIBNX
+// I guess that works...
+#define setenv(x, y, z) (void*)0
+#define tzset() (void*)0
+#define unsetenv(x) (void*)0
+#endif // HAVE_LIBNX
 
 // This is a base time that everything is relative to.
 // This way, time doesn't move strangely with savestates, turbo speed, etc.
@@ -75,6 +81,22 @@ static u64 __RtcGetCurrentTick()
 	// TODO: It's probably expecting ticks since January 1, 0001?
 	return CoreTiming::GetGlobalTimeUs() + rtcBaseTicks;
 }
+
+#if defined(__MINGW32__)
+errno_t _get_timezone(long *seconds)
+{
+  time_t now = time(NULL);
+
+  struct tm *gm = gmtime(&now);
+  time_t gmt = mktime(gm);
+
+  struct tm *loc = localtime(&now);
+  time_t local = mktime(loc);
+
+  *seconds = local - gmt;
+  return 0;
+}
+#endif
 
 #if defined(_WIN32)
 #define FILETIME_FROM_UNIX_EPOCH_US (rtcMagicOffset - rtcFiletimeOffset)
@@ -124,6 +146,10 @@ static time_t rtc_timegm(struct tm *tm)
 
 #endif
 
+static void RtcUpdateBaseTicks() {
+	rtcBaseTicks = 1000000ULL * rtcBaseTime.tv_sec + rtcBaseTime.tv_usec + rtcMagicOffset;
+}
+
 void __RtcInit()
 {
 	// This is the base time, the only case we use gettimeofday() for.
@@ -131,9 +157,9 @@ void __RtcInit()
 	timeval tv;
 	gettimeofday(&tv, NULL);
 	rtcBaseTime.tv_sec = tv.tv_sec;
-	rtcBaseTime.tv_usec = tv.tv_usec;
+	rtcBaseTime.tv_usec = 0;
 	// Precalculate the current time in microseconds (rtcMagicOffset is offset to 1970.)
-	rtcBaseTicks = 1000000ULL * rtcBaseTime.tv_sec + rtcBaseTime.tv_usec + rtcMagicOffset;
+	RtcUpdateBaseTicks();
 }
 
 void __RtcDoState(PointerWrap &p)
@@ -142,9 +168,9 @@ void __RtcDoState(PointerWrap &p)
 	if (!s)
 		return;
 
-	p.Do(rtcBaseTime);
+	Do(p, rtcBaseTime);
 	// Update the precalc, pointless to savestate this as it's just based on the other value.
-	rtcBaseTicks = 1000000ULL * rtcBaseTime.tv_sec + rtcBaseTime.tv_usec + rtcMagicOffset;
+	RtcUpdateBaseTicks();
 }
 
 void __RtcTimeOfDay(PSPTimeval *tv)
@@ -155,6 +181,19 @@ void __RtcTimeOfDay(PSPTimeval *tv)
 	s64 adjustedUs = additionalUs + tv->tv_usec;
 	tv->tv_sec += long(adjustedUs / 1000000UL);
 	tv->tv_usec = adjustedUs % 1000000UL;
+}
+
+int32_t RtcBaseTime(int32_t *micro) {
+	if (micro) {
+		*micro = rtcBaseTime.tv_usec;
+	}
+	return rtcBaseTime.tv_sec;
+}
+
+void RtcSetBaseTime(int32_t seconds, int32_t micro) {
+	rtcBaseTime.tv_sec = seconds;
+	rtcBaseTime.tv_usec = micro;
+	RtcUpdateBaseTicks();
 }
 
 static void __RtcTmToPspTime(ScePspDateTime &t, const tm *val)
@@ -459,11 +498,11 @@ static int sceRtcConvertLocalTimeToUTC(u32 tickLocalPtr,u32 tickUTCPtr)
 	{
 		u64 srcTick = Memory::Read_U64(tickLocalPtr);
 		// TODO : Let the user select his timezone / daylight saving instead of taking system param ?
-#ifdef _MSC_VER
+#ifdef _WIN32
 		long timezone_val;
 		_get_timezone(&timezone_val);
 		srcTick -= -timezone_val * 1000000ULL;
-#elif !defined(_AIX) && !defined(__sgi) && !defined(__hpux)
+#elif !defined(_AIX) && !defined(__sgi) && !defined(__hpux) && !defined(HAVE_LIBNX)
 		time_t timezone = 0;
 		tm *time = localtime(&timezone);
 		srcTick -= time->tm_gmtoff*1000000ULL;
@@ -484,11 +523,11 @@ static int sceRtcConvertUtcToLocalTime(u32 tickUTCPtr,u32 tickLocalPtr)
 	{
 		u64 srcTick = Memory::Read_U64(tickUTCPtr);
 		// TODO : Let the user select his timezone / daylight saving instead of taking system param ?
-#ifdef _MSC_VER
+#ifdef _WIN32
 		long timezone_val;
 		_get_timezone(&timezone_val);
 		srcTick += -timezone_val * 1000000ULL;
-#elif !defined(_AIX) && !defined(__sgi) && !defined(__hpux)
+#elif !defined(_AIX) && !defined(__sgi) && !defined(__hpux) && !defined(HAVE_LIBNX)
 		time_t timezone = 0;
 		tm *time = localtime(&timezone);
 		srcTick += time->tm_gmtoff*1000000ULL;
@@ -1019,11 +1058,11 @@ static int sceRtcFormatRFC2822LocalTime(u32 outPtr, u32 srcTickPtr)
 	}
 
 	int tz_seconds;
-#ifdef _MSC_VER
+#ifdef _WIN32
 		long timezone_val;
 		_get_timezone(&timezone_val);
 		tz_seconds = -timezone_val;
-#elif !defined(_AIX) && !defined(__sgi) && !defined(__hpux)
+#elif !defined(_AIX) && !defined(__sgi) && !defined(__hpux) && !defined(HAVE_LIBNX)
 		time_t timezone = 0;
 		tm *time = localtime(&timezone);
 		tz_seconds = time->tm_gmtoff;
@@ -1056,11 +1095,11 @@ static int sceRtcFormatRFC3339LocalTime(u32 outPtr, u32 srcTickPtr)
 	}
 
 	int tz_seconds;
-#ifdef _MSC_VER
+#ifdef _WIN32
 		long timezone_val;
 		_get_timezone(&timezone_val);
 		tz_seconds = -timezone_val;
-#elif !defined(_AIX) && !defined(__sgi) && !defined(__hpux)
+#elif !defined(_AIX) && !defined(__sgi) && !defined(__hpux) && !defined(HAVE_LIBNX)
 		time_t timezone = 0;
 		tm *time = localtime(&timezone);
 		tz_seconds = time->tm_gmtoff;

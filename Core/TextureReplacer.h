@@ -23,8 +23,10 @@
 #include <vector>
 #include "Common/Common.h"
 #include "Common/MemoryUtil.h"
+#include "GPU/Common/TextureDecoder.h"
 #include "GPU/ge_constants.h"
 
+class IniFile;
 class TextureCacheCommon;
 class TextureReplacer;
 
@@ -43,13 +45,13 @@ enum class ReplacedTextureFormat {
 enum class ReplacedTextureAlpha {
 	UNKNOWN = 0x04,
 	FULL = 0x00,
-	SIMPLE = 0x08,
 };
 
 // For forward comatibility, we specify the hash.
 enum class ReplacedTextureHash {
-	// TODO: Maybe only support crc32c for now?
 	QUICK,
+	XXH32,
+	XXH64,
 };
 
 struct ReplacedTextureLevel {
@@ -182,26 +184,40 @@ public:
 	u32 ComputeHash(u32 addr, int bufw, int w, int h, GETextureFormat fmt, u16 maxSeenV);
 
 	ReplacedTexture &FindReplacement(u64 cachekey, u32 hash, int w, int h);
+	bool FindFiltering(u64 cachekey, u32 hash, TextureFiltering *forceFiltering);
 
 	void NotifyTextureDecoded(const ReplacedTextureDecodeInfo &replacedInfo, const void *data, int pitch, int level, int w, int h);
 
+	static bool GenerateIni(const std::string &gameID, std::string *generatedFilename);
+
 protected:
 	bool LoadIni();
+	bool LoadIniValues(IniFile &ini, bool isOverride = false);
 	void ParseHashRange(const std::string &key, const std::string &value);
+	void ParseFiltering(const std::string &key, const std::string &value);
+	void ParseReduceHashRange(const std::string& key, const std::string& value);
 	bool LookupHashRange(u32 addr, int &w, int &h);
-	std::string LookupHashFile(u64 cachekey, u32 hash, int level);
-	std::string HashName(u64 cachekey, u32 hash, int level);
+	float LookupReduceHashRange(int& w, int& h);
+	std::string LookupHashFile(u64 cachekey, u32 hash, int level, int w, int h);
+	std::string HashName(u64 cachekey, u32 hash, int level, int w, int h);
 	void PopulateReplacement(ReplacedTexture *result, u64 cachekey, u32 hash, int w, int h);
 
 	SimpleBuf<u32> saveBuf;
-	bool enabled_;
-	bool allowVideo_;
+	bool enabled_ = false;
+	bool allowVideo_ = false;
+	bool ignoreAddress_ = false;
+	bool reduceHash_ = false;
+	float reduceHashSize = 1.0; // default value with reduceHash to false
+	float reduceHashGlobalValue = 0.5; // Global value for textures dump pngs of all sizes, 0.5 by default but can be set in textures.ini
+	bool ignoreMipmap_ = false;
 	std::string gameID_;
 	std::string basePath_;
-	ReplacedTextureHash hash_;
+	ReplacedTextureHash hash_ = ReplacedTextureHash::QUICK;
 	typedef std::pair<int, int> WidthHeightPair;
 	std::unordered_map<u64, WidthHeightPair> hashranges_;
+	std::unordered_map<u64, float> reducehashranges_;
 	std::unordered_map<ReplacementAliasKey, std::string> aliases_;
+	std::unordered_map<ReplacementCacheKey, TextureFiltering> filtering_;
 
 	ReplacedTexture none_;
 	std::unordered_map<ReplacementCacheKey, ReplacedTexture> cache_;

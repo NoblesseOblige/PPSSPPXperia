@@ -26,19 +26,19 @@
 #include "Core/Config.h"
 
 static int kuKernelLoadModule(const char *path, uint32_t flags, uint32_t lmOptionAddr) {
-	INFO_LOG(HLE, "kuKernelLoadModule - forwarding to sceKernelLoadModule");
+	INFO_LOG(SCEKERNEL, "kuKernelLoadModule - forwarding to sceKernelLoadModule");
 	// Simply forward the call, like JPSCP does.
 	return sceKernelLoadModule(path, flags, lmOptionAddr);
 }
 
 static int kuKernelGetModel() {
-	INFO_LOG(HLE, "kuKernelGetModel()");
+	INFO_LOG(SCEKERNEL, "kuKernelGetModel()");
 	return g_Config.iPSPModel;
 }
 
 const HLEFunction KUBridge[] =
 {
-	{ 0x4C25EA72, &WrapI_CUU<kuKernelLoadModule>, "kuKernelLoadModule", 'i', "cuu" },
+	{ 0x4C25EA72, &WrapI_CUU<kuKernelLoadModule>, "kuKernelLoadModule", 'i', "sxx" },
 	{ 0x24331850, &WrapI_V<kuKernelGetModel>, "kuKernelGetModel", 'i', "" },
 };
 

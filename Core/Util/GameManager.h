@@ -22,8 +22,18 @@
 
 #pragma once
 
-#include "thread/thread.h"
-#include "net/http_client.h"
+#include <thread>
+#include "Common/Net/HTTPClient.h"
+
+enum class GameManagerState {
+	IDLE,
+	DOWNLOADING,
+	INSTALLING,
+};
+
+struct zip;
+class FileLoader;
+struct ZipFileInfo;
 
 class GameManager {
 public:
@@ -35,18 +45,22 @@ public:
 	bool DownloadAndInstall(std::string storeZipUrl);
 	bool Uninstall(std::string name);
 
+	// Cancels the download in progress, if any.
+	bool CancelDownload();
+
 	// Call from time to time to check on completed downloads from the
 	// main UI thread.
 	void Update();
 
-	// Returns false if no install is in progress.
-	bool IsInstallInProgress() const {
-		return installInProgress_ || IsDownloadInProgress();
+	GameManagerState GetState() {
+		if (installInProgress_)
+			return GameManagerState::INSTALLING;
+		if (curDownload_)
+			return GameManagerState::DOWNLOADING;
+		return GameManagerState::IDLE;
 	}
-	bool IsDownloadInProgress() const {
-		return curDownload_.get() != nullptr;
-	}
-	float GetCurrentInstallProgress() const {
+
+	float GetCurrentInstallProgressPercentage() const {
 		return installProgress_;
 	}
 	std::string GetInstallError() const {
@@ -54,18 +68,46 @@ public:
 	}
 
 	// Only returns false if there's already an installation in progress.
-	bool InstallGameOnThread(std::string zipFile, bool deleteAfter);
+	bool InstallGameOnThread(std::string url, std::string tempFileName, bool deleteAfter);
 
 private:
-	bool InstallGame(std::string zipfile, bool deleteAfter = false);
+	bool InstallGame(const std::string &url, const std::string &tempFileName, bool deleteAfter);
+	bool InstallMemstickGame(struct zip *z, const std::string &zipFile, const std::string &pspGame, const ZipFileInfo &info, bool allowRoot, bool deleteAfter);
+	bool InstallZippedISO(struct zip *z, int isoFileIndex, std::string zipfile, bool deleteAfter);
+	bool InstallRawISO(const std::string &zipFile, const std::string &originalName, bool deleteAfter);
 	void InstallDone();
+	bool ExtractFile(struct zip *z, int file_index, std::string outFilename, size_t *bytesCopied, size_t allBytes);
+	bool DetectTexturePackDest(struct zip *z, int iniIndex, std::string *dest);
+	void SetInstallError(const std::string &err);
 
 	std::string GetTempFilename() const;
+	std::string GetGameID(const std::string &path) const;
+	std::string GetPBPGameID(FileLoader *loader) const;
+	std::string GetISOGameID(FileLoader *loader) const;
 	std::shared_ptr<http::Download> curDownload_;
 	std::shared_ptr<std::thread> installThread_;
-	bool installInProgress_;
-	float installProgress_;
+	bool installInProgress_ = false;
+	bool installDonePending_ = false;
+	float installProgress_ = 0.0f;
 	std::string installError_;
 };
 
 extern GameManager g_GameManager;
+
+enum class ZipFileContents {
+	UNKNOWN,
+	PSP_GAME_DIR,
+	ISO_FILE,
+	TEXTURE_PACK,
+};
+
+struct ZipFileInfo {
+	int numFiles;
+	int stripChars;  // for PSP game
+	int isoFileIndex;  // for ISO
+	int textureIniIndex;  // for textures
+	bool ignoreMetaFiles;
+};
+
+ZipFileContents DetectZipFileContents(struct zip *z, ZipFileInfo *info);
+ZipFileContents DetectZipFileContents(std::string fileName, ZipFileInfo *info);

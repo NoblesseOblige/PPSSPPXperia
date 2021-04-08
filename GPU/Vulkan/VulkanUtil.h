@@ -20,9 +20,10 @@
 #include <tuple>
 #include <map>
 
-#include "Common/Vulkan/VulkanContext.h"
-#include "Common/Vulkan/VulkanLoader.h"
-#include "Common/Vulkan/VulkanImage.h"
+#include "Common/Data/Collections/Hashmaps.h"
+#include "Common/GPU/Vulkan/VulkanContext.h"
+#include "Common/GPU/Vulkan/VulkanLoader.h"
+#include "Common/GPU/Vulkan/VulkanImage.h"
 
 // Vulkan doesn't really have the concept of an FBO that owns the images,
 // but it does have the concept of a framebuffer as a set of attachments.
@@ -42,56 +43,40 @@
 //
 // Each FBO will get its own command buffer for each pass. 
 
-// 
-struct VulkanFBOPass {
-	VkCommandBuffer cmd;
-};
-
-class VulkanFBO {
-public:
-	VulkanFBO();
-	~VulkanFBO();
-
-	// Depth-format is chosen automatically depending on hardware support.
-	// Color format will be 32-bit RGBA.
-	void Create(VulkanContext *vulkan, VkRenderPass rp_compatible, int width, int height, VkFormat colorFormat);
-
-	VulkanTexture *GetColor() { return color_; }
-	VulkanTexture *GetDepthStencil() { return depthStencil_; }
-
-	VkFramebuffer GetFramebuffer() { return framebuffer_; }
-
-private:
-	VulkanTexture *color_;
-	VulkanTexture *depthStencil_;
-
-	// This point specifically to color and depth.
-	VkFramebuffer framebuffer_;
-};
-
 // Similar to a subset of Thin3D, but separate.
 // This is used for things like postprocessing shaders, depal, etc.
 // No UBO data is used, only PushConstants.
 // No transform matrices, only post-proj coordinates.
 // Two textures can be sampled.
+// Some simplified depth/stencil modes available.
+
 class Vulkan2D {
 public:
 	Vulkan2D(VulkanContext *vulkan);
 	~Vulkan2D();
 
+	VulkanContext *GetVulkanContext() const { return vulkan_; }
+
 	void DeviceLost();
 	void DeviceRestore(VulkanContext *vulkan);
 	void Shutdown();
 
-	VkPipeline GetPipeline(VkPipelineCache cache, VkRenderPass rp, VkShaderModule vs, VkShaderModule fs);
+	enum class VK2DDepthStencilMode {
+		NONE,
+		STENCIL_REPLACE_ALWAYS,  // Does not draw to color.
+	};
 
+	// The only supported primitive is the triangle strip, for simplicity.
+	// ReadVertices can be used for vertex-less rendering where you generate verts in the vshader.
+	VkPipeline GetPipeline(VkRenderPass rp, VkShaderModule vs, VkShaderModule fs, bool readVertices = true, VK2DDepthStencilMode depthStencilMode = VK2DDepthStencilMode::NONE);
+	VkPipelineLayout GetPipelineLayout() const { return pipelineLayout_; }
 	void BeginFrame();
 	void EndFrame();
 
-	VkDescriptorSet GetDescriptorSet(VkImageView tex1, VkSampler sampler1, VkImageView tex2, VkSampler sampler2);
+	void PurgeVertexShader(VkShaderModule s, bool keepPipeline = false);
+	void PurgeFragmentShader(VkShaderModule s, bool keepPipeline = false);
 
-	// Simple way
-	void BindDescriptorSet(VkCommandBuffer cmd, VkImageView tex1, VkSampler sampler1);
+	VkDescriptorSet GetDescriptorSet(VkImageView tex1, VkSampler sampler1, VkImageView tex2, VkSampler sampler2);
 
 	struct Vertex {
 		float x, y, z;
@@ -102,9 +87,10 @@ private:
 	void InitDeviceObjects();
 	void DestroyDeviceObjects();
 
-	VulkanContext *vulkan_;
-	VkDescriptorSetLayout descriptorSetLayout_;
-	VkPipelineLayout pipelineLayout_;
+	VulkanContext *vulkan_ = nullptr;
+	VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
+	VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
+	VkPipelineCache pipelineCache_ = VK_NULL_HANDLE;
 
 	// Yes, another one...
 	struct DescriptorSetKey {
@@ -121,8 +107,10 @@ private:
 		VkShaderModule vs;
 		VkShaderModule fs;
 		VkRenderPass rp;
+		VK2DDepthStencilMode depthStencilMode;
+		bool readVertices;
 		bool operator < (const PipelineKey &other) const {
-			return std::tie(vs, fs, rp) < std::tie(other.vs, other.fs, other.rp);
+			return std::tie(vs, fs, rp, depthStencilMode, readVertices) < std::tie(other.vs, other.fs, other.rp, other.depthStencilMode, other.readVertices);
 		}
 	};
 
@@ -131,10 +119,56 @@ private:
 		std::map<DescriptorSetKey, VkDescriptorSet> descSets;
 	};
 
-	FrameData frameData_[2];
-	int curFrame_;
+	FrameData frameData_[VulkanContext::MAX_INFLIGHT_FRAMES];
 
 	std::map<PipelineKey, VkPipeline> pipelines_;
+	std::vector<VkPipeline> keptPipelines_;
+};
+
+// Manager for compute shaders that upload things (and those have two bindings: a storage buffer to read from and an image to write to).
+class VulkanComputeShaderManager {
+public:
+	VulkanComputeShaderManager(VulkanContext *vulkan);
+	~VulkanComputeShaderManager();
+
+	void DeviceLost() {
+		DestroyDeviceObjects();
+	}
+	void DeviceRestore(VulkanContext *vulkan) {
+		vulkan_ = vulkan;
+		InitDeviceObjects();
+	}
+
+	// Note: This doesn't cache. The descriptor is for immediate use only.
+	VkDescriptorSet GetDescriptorSet(VkImageView image, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize range, VkBuffer buffer2 = VK_NULL_HANDLE, VkDeviceSize offset2 = 0, VkDeviceSize range2 = 0);
+
+	// This of course caches though.
+	VkPipeline GetPipeline(VkShaderModule cs);
+	VkPipelineLayout GetPipelineLayout() const { return pipelineLayout_; }
+
+	void BeginFrame();
+	void EndFrame();
+
+private:
+	void InitDeviceObjects();
+	void DestroyDeviceObjects();
+
+	VulkanContext *vulkan_ = nullptr;
+	VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
+	VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
+	VkPipelineCache pipelineCache_ = VK_NULL_HANDLE;
+
+	struct FrameData {
+		VkDescriptorPool descPool;
+		int numDescriptors;
+	};
+	FrameData frameData_[VulkanContext::MAX_INFLIGHT_FRAMES]{};
+
+	struct PipelineKey {
+		VkShaderModule module;
+	};
+	
+	DenseHashMap<PipelineKey, VkPipeline, (VkPipeline)VK_NULL_HANDLE> pipelines_;
 };
 
 

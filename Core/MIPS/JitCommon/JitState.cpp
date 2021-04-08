@@ -15,44 +15,59 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "ppsspp_config.h"
 #include "Common/CPUDetect.h"
+#include "Core/Config.h"
 #include "Core/MIPS/JitCommon/JitState.h"
 #include "Common/MemoryUtil.h"
 
 namespace MIPSComp {
 	JitOptions::JitOptions() {
+		disableFlags = g_Config.uJitDisableFlags;
+
 		// x86
-		enableVFPUSIMD = true;
+		enableVFPUSIMD = !Disabled(JitDisable::SIMD);
 		// Set by Asm if needed.
 		reserveR15ForAsm = false;
 
 		// ARM/ARM64
 		useBackJump = false;
 		useForwardJump = false;
-		cachePointers = true;
+		cachePointers = !Disabled(JitDisable::CACHE_POINTERS);
 
 		// ARM only
 		downcountInRegister = true;
 		useNEONVFPU = false;  // true
-		if (!cpu_info.bNEON)
+		if (!cpu_info.bNEON || Disabled(JitDisable::SIMD))
 			useNEONVFPU = false;
 
 		//ARM64
-		useASIMDVFPU = false;  // true
+		useASIMDVFPU = false;  // !Disabled(JitDisable::SIMD);
 
 		// Common
 
 		// We can get block linking to work with W^X by doing even more unprotect/re-protect, but let's try without first.
 		// enableBlocklink = !PlatformIsWXExclusive();  // Revert to this line if block linking is slow in W^X mode
-		enableBlocklink = true;
+#if PPSSPP_ARCH(MIPS)
+		enableBlocklink = false;
+#else
+		enableBlocklink = !Disabled(JitDisable::BLOCKLINK);
+#endif
 		immBranches = false;
 		continueBranches = false;
 		continueJumps = false;
 		continueMaxInstructions = 300;
 
 		useStaticAlloc = false;
+		enablePointerify = false;
 #if PPSSPP_ARCH(ARM64)
-		useStaticAlloc = true;
+		useStaticAlloc = !Disabled(JitDisable::STATIC_ALLOC);
+		// iOS/etc. may disable at runtime if Memory::base is not nicely aligned.
+		enablePointerify = !Disabled(JitDisable::POINTERIFY);
 #endif
+	}
+
+	bool JitOptions::Disabled(JitDisable bit) {
+		return (disableFlags & (uint32_t)bit) != 0;
 	}
 }

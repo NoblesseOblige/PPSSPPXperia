@@ -20,24 +20,45 @@
 #include <functional>
 #include <string>
 
-#include "ui/ui_screen.h"
-#include "ui/view.h"
-#include "ui/viewgroup.h"
+#include "Common/UI/UIScreen.h"
+#include "Common/UI/View.h"
+#include "Common/UI/ViewGroup.h"
 
 #include "UI/MiscScreens.h"
+
+enum class SavedataSortOption {
+	FILENAME,
+	SIZE,
+	DATE,
+};
 
 class SavedataBrowser : public UI::LinearLayout {
 public:
 	SavedataBrowser(std::string path, UI::LayoutParams *layoutParams = 0);
 
+	void Update() override;
+
+	void SetSortOption(SavedataSortOption opt);
+	void SetSearchFilter(const std::string &filter);
+
 	UI::Event OnChoice;
 
 private:
+	static bool ByFilename(const UI::View *, const UI::View *);
+	static bool BySize(const UI::View *, const UI::View *);
+	static bool ByDate(const UI::View *, const UI::View *);
+	static bool SortDone();
+
 	void Refresh();
 	UI::EventReturn SavedataButtonClick(UI::EventParams &e);
 
-	UI::ViewGroup *gameList_;
+	SavedataSortOption sortOption_ = SavedataSortOption::FILENAME;
+	UI::ViewGroup *gameList_ = nullptr;
+	UI::TextView *noMatchView_ = nullptr;
+	UI::TextView *searchingView_ = nullptr;
 	std::string path_;
+	std::string searchFilter_;
+	bool searchPending_ = false;
 };
 
 class SavedataScreen : public UIDialogScreenWithGameBackground {
@@ -47,10 +68,17 @@ public:
 	~SavedataScreen();
 
 	void dialogFinished(const Screen *dialog, DialogResult result) override;
+	void sendMessage(const char *message, const char *value) override;
 
 protected:
 	UI::EventReturn OnSavedataButtonClick(UI::EventParams &e);
+	UI::EventReturn OnSortClick(UI::EventParams &e);
+	UI::EventReturn OnSearch(UI::EventParams &e);
 	void CreateViews() override;
+
 	bool gridStyle_;
-	SavedataBrowser *browser_;
+	SavedataSortOption sortOption_ = SavedataSortOption::FILENAME;
+	SavedataBrowser *dataBrowser_;
+	SavedataBrowser *stateBrowser_;
+	std::string searchFilter_;
 };

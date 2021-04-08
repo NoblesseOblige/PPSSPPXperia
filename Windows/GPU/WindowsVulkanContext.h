@@ -19,18 +19,27 @@
 
 #include "Common/GraphicsContext.h"
 #include "Windows/GPU/WindowsGraphicsContext.h"
-#include "thin3d/thin3d.h"
+#include "Common/GPU/thin3d.h"
+
+class VulkanContext;
+class VulkanRenderManager;
 
 class WindowsVulkanContext : public WindowsGraphicsContext {
 public:
+	WindowsVulkanContext() : draw_(nullptr) {}
 	bool Init(HINSTANCE hInst, HWND window, std::string *error_message) override;
 	void Shutdown() override;
-	void SwapInterval(int interval) override;
-	void SwapBuffers() override;
+	void SwapInterval(int interval) override {}
+	void SwapBuffers() override {}
 	void Resize() override;
+	void Poll() override;
 
-	void *GetAPIContext();
+	void *GetAPIContext() override;
 
-	Draw::DrawContext *CreateThin3DContext() override;
+	Draw::DrawContext *GetDrawContext() override { return draw_; }
+private:
+	Draw::DrawContext *draw_;
+	VulkanContext *vulkan_ = nullptr;
+	VulkanRenderManager *renderManager_ = nullptr;
 };
 

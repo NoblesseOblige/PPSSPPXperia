@@ -1,34 +1,36 @@
+#include "ppsspp_config.h"
+
 #include "Common/CommonWindows.h"
 #include <d3d9.h>
 
-#include "GPU/Directx9/helper/global.h"
-#include "GPU/Directx9/helper/dx_fbo.h"
+#include "Common/GPU/D3D9/D3D9StateCache.h"
 
-#include "base/logging.h"
-#include "util/text/utf8.h"
-#include "i18n/i18n.h"
+#include "Common/System/Display.h"
+#include "Common/Data/Encoding/Utf8.h"
+#include "Common/Data/Text/I18n.h"
 
+#include "Common/Log.h"
 #include "Core/Config.h"
+#include "Core/ConfigValues.h"
 #include "Core/Reporting.h"
+#include "Core/System.h"
+#include "Common/OSVersion.h"
 #include "Windows/GPU/D3D9Context.h"
 #include "Windows/W32Util/Misc.h"
-#include "thin3d/thin3d.h"
-#include "thin3d/d3dx9_loader.h"
+#include "Common/GPU/thin3d.h"
+#include "Common/GPU/thin3d_create.h"
+#include "Common/GPU/D3D9/D3DCompilerLoader.h"
 
 void D3D9Context::SwapBuffers() {
-	if (has9Ex) {
-		deviceEx->EndScene();
-		deviceEx->PresentEx(NULL, NULL, NULL, NULL, 0);
-		deviceEx->BeginScene();
+	if (has9Ex_) {
+		deviceEx_->EndScene();
+		deviceEx_->PresentEx(NULL, NULL, NULL, NULL, 0);
+		deviceEx_->BeginScene();
 	} else {
-		device->EndScene();
-		device->Present(NULL, NULL, NULL, NULL);
-		device->BeginScene();
+		device_->EndScene();
+		device_->Present(NULL, NULL, NULL, NULL);
+		device_->BeginScene();
 	}
-}
-
-Draw::DrawContext *D3D9Context::CreateThin3DContext() {
-	return Draw::T3DCreateDX9Context(d3d, d3dEx, adapterId, device, deviceEx);
 }
 
 typedef HRESULT (__stdcall *DIRECT3DCREATE9EX)(UINT, IDirect3D9Ex**);
@@ -49,66 +51,70 @@ static void GetRes(HWND hWnd, int &xres, int &yres) {
 }
 
 void D3D9Context::SwapInterval(int interval) {
-	// Dummy
+	swapInterval_ = interval;
 }
 
 bool D3D9Context::Init(HINSTANCE hInst, HWND wnd, std::string *error_message) {
 	bool windowed = true;
-	hWnd = wnd;
+	hWnd_ = wnd;
+
+	// D3D9 has no need for display rotation.
+	g_display_rotation = DisplayRotation::ROTATE_0;
+	g_display_rot_matrix.setIdentity();
 
 	DIRECT3DCREATE9EX g_pfnCreate9ex;
 
-	hD3D9 = LoadLibrary(TEXT("d3d9.dll"));
-	if (!hD3D9) {
-		ELOG("Missing d3d9.dll");
+	hD3D9_ = LoadLibrary(TEXT("d3d9.dll"));
+	if (!hD3D9_) {
+		ERROR_LOG(G3D, "Missing d3d9.dll");
 		*error_message = "D3D9.dll missing - try reinstalling DirectX.";
 		return false;
 	}
 
-	int d3dx_version = LoadD3DX9Dynamic();
-	if (!d3dx_version) {
-		*error_message = "D3DX DLL not found! Try reinstalling DirectX.";
+	bool result = LoadD3DCompilerDynamic();
+	if (!result) {
+		*error_message = "D3DCompiler not found! Try reinstalling DirectX.";
 		return false;
 	}
 
-	g_pfnCreate9ex = (DIRECT3DCREATE9EX)GetProcAddress(hD3D9, "Direct3DCreate9Ex");
-	has9Ex = (g_pfnCreate9ex != NULL) && IsVistaOrHigher();
+	g_pfnCreate9ex = (DIRECT3DCREATE9EX)GetProcAddress(hD3D9_, "Direct3DCreate9Ex");
+	has9Ex_ = (g_pfnCreate9ex != NULL) && IsVistaOrHigher();
 
-	if (has9Ex) {
-		HRESULT result = g_pfnCreate9ex(D3D_SDK_VERSION, &d3dEx);
-		d3d = d3dEx;
+	if (has9Ex_) {
+		HRESULT result = g_pfnCreate9ex(D3D_SDK_VERSION, &d3dEx_);
+		d3d_ = d3dEx_;
 		if (FAILED(result)) {
-			FreeLibrary(hD3D9);
+			FreeLibrary(hD3D9_);
 			*error_message = "D3D9Ex available but context creation failed. Try reinstalling DirectX.";
 			return false;
 		}
 	} else {
-		d3d = Direct3DCreate9(D3D_SDK_VERSION);
-		if (!d3d) {
-			FreeLibrary(hD3D9);
+		d3d_ = Direct3DCreate9(D3D_SDK_VERSION);
+		if (!d3d_) {
+			FreeLibrary(hD3D9_);
 			*error_message = "Failed to create D3D9 context. Try reinstalling DirectX.";
 			return false;
 		}
 	}
+	adapterId_ = D3DADAPTER_DEFAULT;
 
 	D3DCAPS9 d3dCaps;
 
 	D3DDISPLAYMODE d3ddm;
-	if (FAILED(d3d->GetAdapterDisplayMode(D3DADAPTER_DEFAULT, &d3ddm))) {
+	if (FAILED(d3d_->GetAdapterDisplayMode(adapterId_, &d3ddm))) {
 		*error_message = "GetAdapterDisplayMode failed";
-		d3d->Release();
+		d3d_->Release();
 		return false;
 	}
 
-	adapterId = D3DADAPTER_DEFAULT;
-	if (FAILED(d3d->GetDeviceCaps(adapterId, D3DDEVTYPE_HAL, &d3dCaps))) {
-		*error_message = "GetDeviceCaps failed (???)";
-		d3d->Release();
+	if (FAILED(d3d_->GetDeviceCaps(adapterId_, D3DDEVTYPE_HAL, &d3dCaps))) {
+		*error_message = "GetDeviceCaps failed (?)";
+		d3d_->Release();
 		return false;
 	}
 
 	HRESULT hr;
-	if (FAILED(hr = d3d->CheckDeviceFormat(D3DADAPTER_DEFAULT,
+	if (FAILED(hr = d3d_->CheckDeviceFormat(adapterId_,
 		D3DDEVTYPE_HAL,
 		d3ddm.Format,
 		D3DUSAGE_DEPTHSTENCIL,
@@ -116,7 +122,7 @@ bool D3D9Context::Init(HINSTANCE hInst, HWND wnd, std::string *error_message) {
 		D3DFMT_D24S8))) {
 		if (hr == D3DERR_NOTAVAILABLE) {
 			*error_message = "D24S8 depth/stencil not available";
-			d3d->Release();
+			d3d_->Release();
 			return false;
 		}
 	}
@@ -128,102 +134,95 @@ bool D3D9Context::Init(HINSTANCE hInst, HWND wnd, std::string *error_message) {
 		dwBehaviorFlags |= D3DCREATE_SOFTWARE_VERTEXPROCESSING;
 
 	int xres, yres;
-	GetRes(hWnd, xres, yres);
+	GetRes(hWnd_, xres, yres);
 
-	memset(&pp, 0, sizeof(pp));
-	pp.BackBufferWidth = xres;
-	pp.BackBufferHeight = yres;
-	pp.BackBufferFormat = d3ddm.Format;
-	pp.MultiSampleType = D3DMULTISAMPLE_NONE;
-	pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-	pp.Windowed = windowed;
-	pp.hDeviceWindow = wnd;
-	pp.EnableAutoDepthStencil = true;
-	pp.AutoDepthStencilFormat = D3DFMT_D24S8;
-	pp.PresentationInterval = (g_Config.bVSync) ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
+	presentParams_ = {};
+	presentParams_.BackBufferWidth = xres;
+	presentParams_.BackBufferHeight = yres;
+	presentParams_.BackBufferFormat = d3ddm.Format;
+	presentParams_.MultiSampleType = D3DMULTISAMPLE_NONE;
+	presentParams_.SwapEffect = D3DSWAPEFFECT_DISCARD;
+	presentParams_.Windowed = windowed;
+	presentParams_.hDeviceWindow = wnd;
+	presentParams_.EnableAutoDepthStencil = true;
+	presentParams_.AutoDepthStencilFormat = D3DFMT_D24S8;
+	presentParams_.PresentationInterval = swapInterval_ == 1 ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
 
-	if (has9Ex) {
+	if (has9Ex_) {
 		if (windowed && IsWin7OrLater()) {
-			// This new flip mode gives higher performance.
-			// TODO: This makes it slower?
+			// This "new" flip mode should give higher performance but doesn't.
 			//pp.BackBufferCount = 2;
 			//pp.SwapEffect = D3DSWAPEFFECT_FLIPEX;
 		}
-		hr = d3dEx->CreateDeviceEx(adapterId, D3DDEVTYPE_HAL, wnd, dwBehaviorFlags, &pp, NULL, &deviceEx);
-		device = deviceEx;
+		hr = d3dEx_->CreateDeviceEx(adapterId_, D3DDEVTYPE_HAL, wnd, dwBehaviorFlags, &presentParams_, NULL, &deviceEx_);
+		device_ = deviceEx_;
 	} else {
-		hr = d3d->CreateDevice(adapterId, D3DDEVTYPE_HAL, wnd, dwBehaviorFlags, &pp, &device);
+		hr = d3d_->CreateDevice(adapterId_, D3DDEVTYPE_HAL, wnd, dwBehaviorFlags, &presentParams_, &device_);
 	}
 
 	if (FAILED(hr)) {
 		*error_message = "Failed to create D3D device";
-		d3d->Release();
+		d3d_->Release();
 		return false;
 	}
 
-	device->BeginScene();
-	DX9::pD3Ddevice = device;
-	DX9::pD3DdeviceEx = deviceEx;
-	DX9::pD3D = d3d;
+	device_->BeginScene();
+	DX9::pD3Ddevice = device_;
+	DX9::pD3DdeviceEx = deviceEx_;
 
-	if (!DX9::CompileShaders(*error_message)) {
-		*error_message = "Unable to compile shaders: " + *error_message;
-		device->EndScene();
-		device->Release();
-		d3d->Release();
-		DX9::pD3Ddevice = nullptr;
-		DX9::pD3DdeviceEx = nullptr;
-		DX9::pD3D = nullptr;
-		device = nullptr;
-		UnloadD3DXDynamic();
-		return false;
-	}
-
-	DX9::fbo_init(d3d);
-
-	if (deviceEx && IsWin7OrLater()) {
+	if (deviceEx_ && IsWin7OrLater()) {
 		// TODO: This makes it slower?
 		//deviceEx->SetMaximumFrameLatency(1);
 	}
-
+	draw_ = Draw::T3DCreateDX9Context(d3d_, d3dEx_, adapterId_, device_, deviceEx_);
+	SetGPUBackend(GPUBackend::DIRECT3D9);
+	if (!draw_->CreatePresets()) {
+		// Shader compiler not installed? Return an error so we can fall back to GL.
+		device_->Release();
+		d3d_->Release();
+		*error_message = "DirectX9 runtime not correctly installed. Please install.";
+		return false;
+	}
+	if (draw_)
+		draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER, 0, 0, nullptr);
 	return true;
 }
 
 void D3D9Context::Resize() {
 	// This should only be called from the emu thread.
-
 	int xres, yres;
-	GetRes(hWnd, xres, yres);
-	bool w_changed = pp.BackBufferWidth != xres;
-	bool h_changed = pp.BackBufferHeight != yres;
+	GetRes(hWnd_, xres, yres);
+	uint32_t newInterval = swapInterval_ == 1 ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;;
+	bool w_changed = presentParams_.BackBufferWidth != xres;
+	bool h_changed = presentParams_.BackBufferHeight != yres;
+	bool i_changed = presentParams_.PresentationInterval != newInterval;
 
-	if (device && (w_changed || h_changed)) {
-		DX9::fbo_shutdown();
-
-		pp.BackBufferWidth = xres;
-		pp.BackBufferHeight = yres;
-		HRESULT hr = device->Reset(&pp);
+	if (device_ && (w_changed || h_changed || i_changed)) {
+		draw_->HandleEvent(Draw::Event::LOST_BACKBUFFER, 0, 0, nullptr);
+		presentParams_.BackBufferWidth = xres;
+		presentParams_.BackBufferHeight = yres;
+		presentParams_.PresentationInterval = newInterval;
+		HRESULT hr = device_->Reset(&presentParams_);
 		if (FAILED(hr)) {
-      // Had to remove DXGetErrorStringA calls here because dxerr.lib is deprecated and will not link with VS 2015.
-			ERROR_LOG_REPORT(G3D, "Unable to reset D3D device");
-			PanicAlert("Unable to reset D3D9 device");
+			// Had to remove DXGetErrorStringA calls here because dxerr.lib is deprecated and will not link with VS 2015.
+			_assert_msg_(false, "Unable to reset D3D9 device");
 		}
-		DX9::fbo_init(d3d);
+		draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER, 0, 0, nullptr);
 	}
 }
 
 void D3D9Context::Shutdown() {
-	DX9::DestroyShaders();
-	DX9::fbo_shutdown();
-	device->EndScene();
-	device->Release();
-	d3d->Release();
-	UnloadD3DXDynamic();
+	draw_->HandleEvent(Draw::Event::LOST_BACKBUFFER, 0, 0, nullptr);
+	delete draw_;
+	draw_ = nullptr;
+	device_->EndScene();
+	device_->Release();
+	d3d_->Release();
+	UnloadD3DCompiler();
 	DX9::pD3Ddevice = nullptr;
 	DX9::pD3DdeviceEx = nullptr;
-	DX9::pD3D = nullptr;
-	device = nullptr;
-	hWnd = nullptr;
-	FreeLibrary(hD3D9);
-	hD3D9 = nullptr;
+	device_ = nullptr;
+	hWnd_ = nullptr;
+	FreeLibrary(hD3D9_);
+	hD3D9_ = nullptr;
 }

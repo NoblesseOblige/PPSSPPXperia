@@ -20,16 +20,17 @@
 #include <vector>
 #include <map>
 
-#include "base/compat.h"
-
-#include "Common/ChunkFile.h"
+#include "Core/CoreTiming.h"
+#include "Core/Debugger/MemBlockInfo.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/System.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/MemMapHelpers.h"
-#include "Core/CoreTiming.h"
 #include "Core/Reporting.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/Serialize/SerializeMap.h"
 
 #include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceKernelThread.h"
@@ -95,7 +96,8 @@ struct FPL : public KernelObject
 		}
 	}
 	const char *GetName() override { return nf.name; }
-	const char *GetTypeName() override { return "FPL"; }
+	const char *GetTypeName() override { return GetStaticTypeName(); }
+	static const char *GetStaticTypeName() { return "FPL"; }
 	static u32 GetMissingErrorCode() { return SCE_KERNEL_ERROR_UNKNOWN_FPLID; }
 	static int GetStaticIDType() { return SCE_KERNEL_TMID_Fpl; }
 	int GetIDType() const override { return SCE_KERNEL_TMID_Fpl; }
@@ -131,16 +133,16 @@ struct FPL : public KernelObject
 		if (!s)
 			return;
 
-		p.Do(nf);
+		Do(p, nf);
 		if (p.mode == p.MODE_READ)
 			blocks = new bool[nf.numBlocks];
-		p.DoArray(blocks, nf.numBlocks);
-		p.Do(address);
-		p.Do(alignedSize);
-		p.Do(nextBlock);
+		DoArray(p, blocks, nf.numBlocks);
+		Do(p, address);
+		Do(p, alignedSize);
+		Do(p, nextBlock);
 		FplWaitingThread dv = {0};
-		p.Do(waitingThreads, dv);
-		p.Do(pausedWaits);
+		Do(p, waitingThreads, dv);
+		Do(p, pausedWaits);
 	}
 
 	NativeFPL nf;
@@ -215,10 +217,6 @@ struct SceKernelVplHeader {
 		do {
 			auto b = prev->next;
 			if (b->sizeInBlocks > allocBlocks) {
-				if (nextFreeBlock_ == b) {
-					nextFreeBlock_ = prev;
-				}
-				prev = b;
 				b = SplitBlock(b, allocBlocks);
 			}
 
@@ -291,16 +289,13 @@ struct SceKernelVplHeader {
 	void UnlinkFreeBlock(PSPPointer<SceKernelVplBlock> b, PSPPointer<SceKernelVplBlock> prev) {
 		allocatedInBlocks_ += b->sizeInBlocks;
 		prev->next = b->next;
-		if (nextFreeBlock_ == b) {
-			nextFreeBlock_ = prev;
-		}
+		nextFreeBlock_ = prev;
 		b->next = SentinelPtr();
 	}
 
 	PSPPointer<SceKernelVplBlock> SplitBlock(PSPPointer<SceKernelVplBlock> b, u32 allocBlocks) {
-		u32 prev = b->next.ptr;
+		u32 prev = b.ptr;
 		b->sizeInBlocks -= allocBlocks;
-		b->next = b + b->sizeInBlocks;
 
 		b += b->sizeInBlocks;
 		b->sizeInBlocks = allocBlocks;
@@ -311,11 +306,11 @@ struct SceKernelVplHeader {
 
 	inline void Validate() {
 		auto lastBlock = LastBlock();
-		_dbg_assert_msg_(SCEKERNEL, nextFreeBlock_->next.ptr != SentinelPtr(), "Next free block should not be allocated.");
-		_dbg_assert_msg_(SCEKERNEL, nextFreeBlock_->next.ptr != sentinel_, "Next free block should not point to sentinel.");
-		_dbg_assert_msg_(SCEKERNEL, lastBlock->sizeInBlocks == 0, "Last block should have size of 0.");
-		_dbg_assert_msg_(SCEKERNEL, lastBlock->next.ptr != SentinelPtr(), "Last block should not be allocated.");
-		_dbg_assert_msg_(SCEKERNEL, lastBlock->next.ptr != sentinel_, "Last block should not point to sentinel.");
+		_dbg_assert_msg_(nextFreeBlock_->next.ptr != SentinelPtr(), "Next free block should not be allocated.");
+		_dbg_assert_msg_(nextFreeBlock_->next.ptr != sentinel_, "Next free block should not point to sentinel.");
+		_dbg_assert_msg_(lastBlock->sizeInBlocks == 0, "Last block should have size of 0.");
+		_dbg_assert_msg_(lastBlock->next.ptr != SentinelPtr(), "Last block should not be allocated.");
+		_dbg_assert_msg_(lastBlock->next.ptr != sentinel_, "Last block should not point to sentinel.");
 
 		auto b = PSPPointer<SceKernelVplBlock>::Create(FirstBlockPtr());
 		bool sawFirstFree = false;
@@ -323,22 +318,22 @@ struct SceKernelVplHeader {
 			bool isFree = b->next.ptr != SentinelPtr();
 			if (isFree) {
 				if (!sawFirstFree) {
-					_dbg_assert_msg_(SCEKERNEL, lastBlock->next.ptr == b.ptr, "Last block should point to first free block.");
+					_dbg_assert_msg_(lastBlock->next.ptr == b.ptr, "Last block should point to first free block.");
 					sawFirstFree = true;
 				}
-				_dbg_assert_msg_(SCEKERNEL, b->next.ptr != SentinelPtr(), "Free blocks should only point to other free blocks.");
-				_dbg_assert_msg_(SCEKERNEL, b->next.ptr > b.ptr, "Free blocks should be in order.");
-				_dbg_assert_msg_(SCEKERNEL, b + b->sizeInBlocks < b->next || b->next.ptr == lastBlock.ptr, "Two free blocks should not be next to each other.");
+				_dbg_assert_msg_(b->next.ptr != SentinelPtr(), "Free blocks should only point to other free blocks.");
+				_dbg_assert_msg_(b->next.ptr > b.ptr, "Free blocks should be in order.");
+				_dbg_assert_msg_(b + b->sizeInBlocks < b->next || b->next.ptr == lastBlock.ptr, "Two free blocks should not be next to each other.");
 			} else {
-				_dbg_assert_msg_(SCEKERNEL, b->next.ptr == SentinelPtr(), "Allocated blocks should point to the sentinel.");
+				_dbg_assert_msg_(b->next.ptr == SentinelPtr(), "Allocated blocks should point to the sentinel.");
 			}
-			_dbg_assert_msg_(SCEKERNEL, b->sizeInBlocks != 0, "Only the last block should have a size of 0.");
+			_dbg_assert_msg_(b->sizeInBlocks != 0, "Only the last block should have a size of 0.");
 			b += b->sizeInBlocks;
 		}
 		if (!sawFirstFree) {
-			_dbg_assert_msg_(SCEKERNEL, lastBlock->next.ptr == lastBlock.ptr, "Last block should point to itself when full.");
+			_dbg_assert_msg_(lastBlock->next.ptr == lastBlock.ptr, "Last block should point to itself when full.");
 		}
-		_dbg_assert_msg_(SCEKERNEL, b.ptr == lastBlock.ptr, "Blocks should not extend outside vpl.");
+		_dbg_assert_msg_(b.ptr == lastBlock.ptr, "Blocks should not extend outside vpl.");
 	}
 
 	void ListBlocks() {
@@ -347,15 +342,15 @@ struct SceKernelVplHeader {
 		while (b.ptr < lastBlock.ptr) {
 			bool isFree = b->next.ptr != SentinelPtr();
 			if (nextFreeBlock_ == b && isFree) {
-				NOTICE_LOG(HLE, "NEXT:  %x -> %x (size %x)", b.ptr - startPtr_, b->next.ptr - startPtr_, b->sizeInBlocks * 8);
+				NOTICE_LOG(SCEKERNEL, "NEXT:  %x -> %x (size %x)", b.ptr - startPtr_, b->next.ptr - startPtr_, b->sizeInBlocks * 8);
 			} else if (isFree) {
-				NOTICE_LOG(HLE, "FREE:  %x -> %x (size %x)", b.ptr - startPtr_, b->next.ptr - startPtr_, b->sizeInBlocks * 8);
+				NOTICE_LOG(SCEKERNEL, "FREE:  %x -> %x (size %x)", b.ptr - startPtr_, b->next.ptr - startPtr_, b->sizeInBlocks * 8);
 			} else {
-				NOTICE_LOG(HLE, "BLOCK: %x (size %x)", b.ptr - startPtr_, b->sizeInBlocks * 8);
+				NOTICE_LOG(SCEKERNEL, "BLOCK: %x (size %x)", b.ptr - startPtr_, b->sizeInBlocks * 8);
 			}
 			b += b->sizeInBlocks;
 		}
-		NOTICE_LOG(HLE, "LAST:  %x -> %x (size %x)", lastBlock.ptr - startPtr_, lastBlock->next.ptr - startPtr_, lastBlock->sizeInBlocks * 8);
+		NOTICE_LOG(SCEKERNEL, "LAST:  %x -> %x (size %x)", lastBlock.ptr - startPtr_, lastBlock->next.ptr - startPtr_, lastBlock->sizeInBlocks * 8);
 	}
 
 	PSPPointer<SceKernelVplBlock> MergeBlocks(PSPPointer<SceKernelVplBlock> first, PSPPointer<SceKernelVplBlock> second) {
@@ -384,7 +379,8 @@ struct SceKernelVplHeader {
 struct VPL : public KernelObject
 {
 	const char *GetName() override { return nv.name; }
-	const char *GetTypeName() override { return "VPL"; }
+	const char *GetTypeName() override { return GetStaticTypeName(); }
+	static const char *GetStaticTypeName() { return "VPL"; }
 	static u32 GetMissingErrorCode() { return SCE_KERNEL_ERROR_UNKNOWN_VPLID; }
 	static int GetStaticIDType() { return SCE_KERNEL_TMID_Vpl; }
 	int GetIDType() const override { return SCE_KERNEL_TMID_Vpl; }
@@ -399,15 +395,15 @@ struct VPL : public KernelObject
 			return;
 		}
 
-		p.Do(nv);
-		p.Do(address);
+		Do(p, nv);
+		Do(p, address);
 		VplWaitingThread dv = {0};
-		p.Do(waitingThreads, dv);
+		Do(p, waitingThreads, dv);
 		alloc.DoState(p);
-		p.Do(pausedWaits);
+		Do(p, pausedWaits);
 
 		if (s >= 2) {
-			p.Do(header);
+			Do(p, header);
 		}
 	}
 
@@ -431,8 +427,11 @@ void __KernelFplEndCallback(SceUID threadID, SceUID prevCallbackId);
 
 void __KernelMemoryInit()
 {
-	kernelMemory.Init(PSP_GetKernelMemoryBase(), PSP_GetKernelMemoryEnd()-PSP_GetKernelMemoryBase());
-	userMemory.Init(PSP_GetUserMemoryBase(), PSP_GetUserMemoryEnd()-PSP_GetUserMemoryBase());
+	MemBlockInfoInit();
+	kernelMemory.Init(PSP_GetKernelMemoryBase(), PSP_GetKernelMemoryEnd() - PSP_GetKernelMemoryBase(), false);
+	userMemory.Init(PSP_GetUserMemoryBase(), PSP_GetUserMemoryEnd() - PSP_GetUserMemoryBase(), false);
+	Memory::Memset(PSP_GetKernelMemoryBase(), 0, PSP_GetKernelMemoryEnd() - PSP_GetKernelMemoryBase(), "MemInit");
+	Memory::Memset(PSP_GetUserMemoryBase(), 0, PSP_GetUserMemoryEnd() - PSP_GetUserMemoryBase(), "MemInit");
 	INFO_LOG(SCEKERNEL, "Kernel and user memory pools initialized");
 
 	vplWaitTimer = CoreTiming::RegisterEvent("VplTimeout", __KernelVplTimeout);
@@ -463,17 +462,19 @@ void __KernelMemoryDoState(PointerWrap &p)
 	kernelMemory.DoState(p);
 	userMemory.DoState(p);
 
-	p.Do(vplWaitTimer);
+	Do(p, vplWaitTimer);
 	CoreTiming::RestoreRegisterEvent(vplWaitTimer, "VplTimeout", __KernelVplTimeout);
-	p.Do(fplWaitTimer);
+	Do(p, fplWaitTimer);
 	CoreTiming::RestoreRegisterEvent(fplWaitTimer, "FplTimeout", __KernelFplTimeout);
-	p.Do(flags_);
-	p.Do(sdkVersion_);
-	p.Do(compilerVersion_);
-	p.DoArray(tlsplUsedIndexes, ARRAY_SIZE(tlsplUsedIndexes));
+	Do(p, flags_);
+	Do(p, sdkVersion_);
+	Do(p, compilerVersion_);
+	DoArray(p, tlsplUsedIndexes, ARRAY_SIZE(tlsplUsedIndexes));
 	if (s >= 2) {
-		p.Do(tlsplThreadEndChecks);
+		Do(p, tlsplThreadEndChecks);
 	}
+
+	MemBlockInfoDoState(p);
 }
 
 void __KernelMemoryShutdown()
@@ -489,6 +490,7 @@ void __KernelMemoryShutdown()
 #endif
 	kernelMemory.Shutdown();
 	tlsplThreadEndChecks.clear();
+	MemBlockInfoShutdown();
 }
 
 enum SceKernelFplAttr
@@ -513,6 +515,7 @@ static bool __KernelUnlockFplForThread(FPL *fpl, FplWaitingThread &threadInfo, u
 		{
 			u32 blockPtr = fpl->address + fpl->alignedSize * blockNum;
 			Memory::Write_U32(blockPtr, threadInfo.addrPtr);
+			NotifyMemInfo(MemBlockFlags::SUB_ALLOC, blockPtr, fpl->alignedSize, "FplAllocate");
 		}
 		else
 			return false;
@@ -725,6 +728,7 @@ int sceKernelAllocateFpl(SceUID uid, u32 blockPtrAddr, u32 timeoutPtr)
 		if (blockNum >= 0) {
 			u32 blockPtr = fpl->address + fpl->alignedSize * blockNum;
 			Memory::Write_U32(blockPtr, blockPtrAddr);
+			NotifyMemInfo(MemBlockFlags::SUB_ALLOC, blockPtr, fpl->alignedSize, "FplAllocate");
 		} else {
 			SceUID threadID = __KernelGetCurThread();
 			HLEKernel::RemoveWaitingThread(fpl->waitingThreads, threadID);
@@ -756,6 +760,7 @@ int sceKernelAllocateFplCB(SceUID uid, u32 blockPtrAddr, u32 timeoutPtr)
 		if (blockNum >= 0) {
 			u32 blockPtr = fpl->address + fpl->alignedSize * blockNum;
 			Memory::Write_U32(blockPtr, blockPtrAddr);
+			NotifyMemInfo(MemBlockFlags::SUB_ALLOC, blockPtr, fpl->alignedSize, "FplAllocate");
 		} else {
 			SceUID threadID = __KernelGetCurThread();
 			HLEKernel::RemoveWaitingThread(fpl->waitingThreads, threadID);
@@ -787,6 +792,7 @@ int sceKernelTryAllocateFpl(SceUID uid, u32 blockPtrAddr)
 		if (blockNum >= 0) {
 			u32 blockPtr = fpl->address + fpl->alignedSize * blockNum;
 			Memory::Write_U32(blockPtr, blockPtrAddr);
+			NotifyMemInfo(MemBlockFlags::SUB_ALLOC, blockPtr, fpl->alignedSize, "FplAllocate");
 			return 0;
 		} else {
 			return SCE_KERNEL_ERROR_NO_MEMORY;
@@ -815,6 +821,9 @@ int sceKernelFreeFpl(SceUID uid, u32 blockPtr)
 			return SCE_KERNEL_ERROR_ILLEGAL_MEMBLOCK;
 		} else {
 			if (fpl->freeBlock(blockNum)) {
+				u32 blockPtr = fpl->address + fpl->alignedSize * blockNum;
+				NotifyMemInfo(MemBlockFlags::SUB_FREE, blockPtr, fpl->alignedSize, "FplFree");
+
 				DEBUG_LOG(SCEKERNEL, "sceKernelFreeFpl(%i, %08x)", uid, blockPtr);
 				__KernelSortFplThreads(fpl);
 
@@ -908,7 +917,8 @@ class PartitionMemoryBlock : public KernelObject
 {
 public:
 	const char *GetName() override { return name; }
-	const char *GetTypeName() override { return "MemoryPart"; }
+	const char *GetTypeName() override { return GetStaticTypeName(); }
+	static const char *GetStaticTypeName() { return "MemoryPart"; }
 	void GetQuickInfo(char *ptr, int size) override
 	{
 		int sz = alloc->GetBlockSizeFromAddress(address);
@@ -955,8 +965,8 @@ public:
 		if (!s)
 			return;
 
-		p.Do(address);
-		p.DoArray(name, sizeof(name));
+		Do(p, address);
+		DoArray(p, name, sizeof(name));
 	}
 
 	u32 address;
@@ -978,7 +988,7 @@ static u32 sceKernelTotalFreeMemSize()
 	return retVal;
 }
 
-static int sceKernelAllocPartitionMemory(int partition, const char *name, int type, u32 size, u32 addr)
+int sceKernelAllocPartitionMemory(int partition, const char *name, int type, u32 size, u32 addr)
 {
 	if (name == NULL)
 	{
@@ -1028,14 +1038,14 @@ static int sceKernelAllocPartitionMemory(int partition, const char *name, int ty
 	return uid;
 }
 
-static int sceKernelFreePartitionMemory(SceUID id)
+int sceKernelFreePartitionMemory(SceUID id)
 {
 	DEBUG_LOG(SCEKERNEL,"sceKernelFreePartitionMemory(%d)",id);
 
 	return kernelObjects.Destroy<PartitionMemoryBlock>(id);
 }
 
-static u32 sceKernelGetBlockHeadAddr(SceUID id)
+u32 sceKernelGetBlockHeadAddr(SceUID id)
 {
 	u32 error;
 	PartitionMemoryBlock *block = kernelObjects.Get<PartitionMemoryBlock>(id, error);
@@ -1141,6 +1151,16 @@ static int sceKernelPrintf(const char *formatString)
 
 		if (param > 6)
 			supported = false;
+	}
+
+	// Scrub for beeps and other suspicious control characters.
+	for (size_t i = 0; i < result.size(); i++) {
+		switch (result[i]) {
+		case 7:  // BEL
+		case 8:  // Backspace
+			result[i] = ' ';
+			break;
+		}
 	}
 
 	// Just in case there were embedded strings that had \n's.
@@ -1495,7 +1515,7 @@ SceUID sceKernelCreateVpl(const char *name, int partition, u32 attr, u32 vplSize
 
 	// A vpl normally has accounting stuff in the first 32 bytes.
 	vpl->address = memBlockPtr + 0x20;
-	vpl->alloc.Init(vpl->address, vpl->nv.poolSize);
+	vpl->alloc.Init(vpl->address, vpl->nv.poolSize, true);
 
 	vpl->header = PSPPointer<SceKernelVplHeader>::Create(memBlockPtr);
 	vpl->header->Init(memBlockPtr, vplSize);
@@ -1564,7 +1584,7 @@ static bool __KernelAllocateVpl(SceUID uid, u32 size, u32 addrPtr, u32 &error, b
 		} else {
 			// Padding (normally used to track the allocation.)
 			u32 allocSize = size + 8;
-			addr = vpl->alloc.Alloc(allocSize, true);
+			addr = vpl->alloc.Alloc(allocSize, true, "VplAllocate");
 		}
 		if (addr != (u32) -1) {
 			Memory::Write_U32(addr, addrPtr);
@@ -1878,7 +1898,8 @@ struct NativeTlspl
 struct TLSPL : public KernelObject
 {
 	const char *GetName() override { return ntls.name; }
-	const char *GetTypeName() override { return "TLS"; }
+	const char *GetTypeName() override { return GetStaticTypeName(); }
+	static const char *GetStaticTypeName() { return "TLS"; }
 	static u32 GetMissingErrorCode() { return PSP_ERROR_UNKNOWN_TLSPL_ID; }
 	static int GetStaticIDType() { return SCE_KERNEL_TMID_Tlspl; }
 	int GetIDType() const override { return SCE_KERNEL_TMID_Tlspl; }
@@ -1891,15 +1912,15 @@ struct TLSPL : public KernelObject
 		if (!s)
 			return;
 
-		p.Do(ntls);
-		p.Do(address);
+		Do(p, ntls);
+		Do(p, address);
 		if (s >= 2)
-			p.Do(alignment);
+			Do(p, alignment);
 		else
 			alignment = 4;
-		p.Do(waitingThreads);
-		p.Do(next);
-		p.Do(usage);
+		Do(p, waitingThreads);
+		Do(p, next);
+		Do(p, usage);
 	}
 
 	NativeTlspl ntls;
@@ -1944,9 +1965,10 @@ int __KernelFreeTls(TLSPL *tls, SceUID threadID)
 
 		u32 alignedSize = (tls->ntls.blockSize + tls->alignment - 1) & ~(tls->alignment - 1);
 		u32 freedAddress = tls->address + freeBlock * alignedSize;
+		NotifyMemInfo(MemBlockFlags::SUB_ALLOC, freedAddress, tls->ntls.blockSize, "TlsFree");
 
 		// Whenever freeing a block, clear it (even if it's not going to wake anyone.)
-		Memory::Memset(freedAddress, 0, tls->ntls.blockSize);
+		Memory::Memset(freedAddress, 0, tls->ntls.blockSize, "TlsFree");
 
 		// First, let's remove the end check for the freeing thread.
 		auto freeingLocked = tlsplThreadEndChecks.equal_range(threadID);
@@ -2218,10 +2240,12 @@ int sceKernelGetTlsAddr(SceUID uid)
 
 		u32 alignedSize = (tls->ntls.blockSize + tls->alignment - 1) & ~(tls->alignment - 1);
 		u32 allocAddress = tls->address + allocBlock * alignedSize;
+		NotifyMemInfo(MemBlockFlags::SUB_ALLOC, allocAddress, tls->ntls.blockSize, "TlsAddr");
 
 		// We clear the blocks upon first allocation (and also when they are freed, both are necessary.)
-		if (needsClear)
-			Memory::Memset(allocAddress, 0, tls->ntls.blockSize);
+		if (needsClear) {
+			Memory::Memset(allocAddress, 0, tls->ntls.blockSize, "TlsAddr");
+		}
 
 		return allocAddress;
 	}
@@ -2295,16 +2319,6 @@ const HLEFunction SysMemUserForUser[] = {
 	{0XFE707FDF, &WrapU_CUUU<AllocMemoryBlock>,                   "SysMemUserForUser_FE707FDF",            'x', "sxxx" },  // AllocMemoryBlock
 	{0XD8DE5C1E, &WrapU_V<SysMemUserForUser_D8DE5C1E>,            "SysMemUserForUser_D8DE5C1E",            'x', ""     },
 };
-
-const HLEFunction SysMemForKernel[] = {
-	{0x636C953B, nullptr,                                         "SysMemForKernel_636c953b",              '?', ""        },
-	{0xC9805775, nullptr,                                         "SysMemForKernel_c9805775",              '?', ""        },
-	{0x1C1FBFE7, nullptr,                                         "SysMemForKernel_1c1fbfe7",              '?', ""        },
-};
-
-void Register_SysMemForKernel() {
-	RegisterModule("SysMemForKernel", ARRAY_SIZE(SysMemForKernel), SysMemForKernel);
-}
 
 void Register_SysMemUserForUser() {
 	RegisterModule("SysMemUserForUser", ARRAY_SIZE(SysMemUserForUser), SysMemUserForUser);

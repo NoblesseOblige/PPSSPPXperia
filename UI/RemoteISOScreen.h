@@ -17,33 +17,30 @@
 
 #pragma once
 
-#include <functional>
+#include <thread>
+#include <mutex>
 
-#include "ui/ui_screen.h"
-#include "ui/viewgroup.h"
+#include "Common/UI/UIScreen.h"
+#include "Common/UI/ViewGroup.h"
 #include "UI/MiscScreens.h"
 #include "UI/MainScreen.h"
-
-namespace std {
-	class thread;
-}
-
-class recursive_mutex;
 
 class RemoteISOScreen : public UIScreenWithBackground {
 public:
 	RemoteISOScreen();
 
 protected:
-	void update(InputState &input) override;
+	void update() override;
 	void CreateViews() override;
 
 	UI::EventReturn HandleStartServer(UI::EventParams &e);
 	UI::EventReturn HandleStopServer(UI::EventParams &e);
 	UI::EventReturn HandleBrowse(UI::EventParams &e);
+	UI::EventReturn HandleSettings(UI::EventParams &e);
 
-	bool serverRunning_;
-	bool serverStopping_;
+	UI::TextView *firewallWarning_ = nullptr;
+	bool serverRunning_ = false;
+	bool serverStopping_ = false;
 };
 
 enum class ScanStatus {
@@ -61,30 +58,50 @@ public:
 	~RemoteISOConnectScreen() override;
 
 protected:
-	void update(InputState &input) override;
+	void update() override;
 	void CreateViews() override;
 
 	ScanStatus GetStatus();
 	void ExecuteScan();
 	void ExecuteLoad();
+	bool FindServer(std::string &resultHost, int &resultPort);
 
 	UI::TextView *statusView_;
 
-	ScanStatus status_;
-	double nextRetry_;
+	ScanStatus status_ = ScanStatus::SCANNING;
+	std::string statusMessage_;
+	double nextRetry_ = 0.0;
 	std::thread *scanThread_;
-	recursive_mutex *statusLock_;
+	std::mutex statusLock_;
 	std::string host_;
 	int port_;
+	std::string url_;
 	std::vector<std::string> games_;
 };
 
 class RemoteISOBrowseScreen : public MainScreen {
 public:
-	RemoteISOBrowseScreen(const std::vector<std::string> &games);
+	RemoteISOBrowseScreen(const std::string &url, const std::vector<std::string> &games);
 
 protected:
 	void CreateViews() override;
 
+	std::string url_;
 	std::vector<std::string> games_;
+};
+
+class RemoteISOSettingsScreen : public UIDialogScreenWithBackground {
+public:
+	RemoteISOSettingsScreen();
+
+	UI::EventReturn OnClickRemoteISOSubdir(UI::EventParams &e);
+	UI::EventReturn OnClickRemoteServer(UI::EventParams &e);
+protected:
+
+	void update() override;
+	void CreateViews() override;
+
+	UI::EventReturn OnChangeRemoteISOSubdir(UI::EventParams &e);
+
+	bool serverRunning_ = false;
 };

@@ -19,18 +19,29 @@
 #include "Core/HLE/sceKernel.h"
 
 class PointerWrap;
+enum WaitType : int;
 
 class HLEHelperThread {
 public:
 	// For savestates.
 	HLEHelperThread();
-	HLEHelperThread(const char *threadName, u32 instructions[], u32 instrCount, u32 prio, int stacksize);
+	HLEHelperThread(const char *threadName, const u32 instructions[], u32 instrCount, u32 prio, int stacksize);
 	HLEHelperThread(const char *threadName, const char *module, const char *func, u32 prio, int stacksize);
 	~HLEHelperThread();
 	void DoState(PointerWrap &p);
 
 	void Start(u32 a0, u32 a1);
 	void Terminate();
+	bool Stopped();
+	void ChangePriority(u32 prio);
+	void Resume(WaitType waitType, SceUID uid, int result);
+
+	// For savestates.
+	void Forget();
+
+	u32 Entry() {
+		return entry_;
+	}
 
 private:
 	void AllocEntry(u32 size);

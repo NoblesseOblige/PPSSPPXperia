@@ -40,6 +40,7 @@
 #include "sceJpeg.h"
 #include "sceKernel.h"
 #include "sceKernelEventFlag.h"
+#include "sceKernelHeap.h"
 #include "sceKernelMemory.h"
 #include "sceKernelInterrupt.h"
 #include "sceKernelModule.h"
@@ -66,10 +67,13 @@
 #include "sceSsl.h"
 #include "sceUmd.h"
 #include "sceUsb.h"
+#include "sceUsbAcc.h"
+#include "sceUsbCam.h"
+#include "sceUsbGps.h"
+#include "sceUsbMic.h"
 #include "sceUtility.h"
 #include "sceVaudio.h"
 #include "sceMt19937.h"
-#include "sceUsbGps.h"
 #include "sceSha256.h"
 #include "sceAdler.h"
 #include "sceSfmt19937.h"
@@ -86,12 +90,14 @@
 //sound
 //zlibdec
 const HLEFunction FakeSysCalls[] = {
-	{NID_THREADRETURN, __KernelReturnFromThread, "__KernelReturnFromThread"},
-	{NID_CALLBACKRETURN, __KernelReturnFromMipsCall, "__KernelReturnFromMipsCall"},
-	{NID_INTERRUPTRETURN, __KernelReturnFromInterrupt, "__KernelReturnFromInterrupt"},
-	{NID_EXTENDRETURN, __KernelReturnFromExtendStack, "__KernelReturnFromExtendStack"},
-	{NID_MODULERETURN, __KernelReturnFromModuleFunc, "__KernelReturnFromModuleFunc"},
-	{NID_IDLE, __KernelIdle, "_sceKernelIdle"},
+	{NID_THREADRETURN, __KernelReturnFromThread, "__KernelReturnFromThread", 'x', ""},
+	{NID_CALLBACKRETURN, __KernelReturnFromMipsCall, "__KernelReturnFromMipsCall", 'x', ""},
+	{NID_INTERRUPTRETURN, __KernelReturnFromInterrupt, "__KernelReturnFromInterrupt", 'x', ""},
+	{NID_EXTENDRETURN, __KernelReturnFromExtendStack, "__KernelReturnFromExtendStack", 'x', ""},
+	{NID_MODULERETURN, __KernelReturnFromModuleFunc, "__KernelReturnFromModuleFunc", 'x', ""},
+	{NID_IDLE, __KernelIdle, "_sceKernelIdle", 'x', ""},
+	{NID_GPUREPLAY, __KernelGPUReplay, "__KernelGPUReplay", 'x', ""},
+	{NID_HLECALLRETURN, HLEReturnFromMipsCall, "HLEReturnFromMipsCall", 'x', ""},
 };
 
 const HLEFunction UtilsForUser[] = 
@@ -152,7 +158,7 @@ const HLEFunction LoadCoreForKernel[] =
 	{0XAE7C6E76, nullptr,                                            "sceKernelRegisterModule",                 '?', ""   },
 	{0X74CF001A, nullptr,                                            "sceKernelReleaseModule",                  '?', ""   },
 	{0XFB8AE27D, nullptr,                                            "sceKernelFindModuleByAddress",            '?', ""   },
-	{0XCCE4A157, nullptr,                                            "sceKernelFindModuleByUID",                '?', ""   },
+	{0XCCE4A157, &WrapU_U<sceKernelFindModuleByUID>,                 "sceKernelFindModuleByUID",                'x', "x" ,     HLE_KERNEL_SYSCALL },
 	{0X82CE54ED, nullptr,                                            "sceKernelModuleCount",                    '?', ""   },
 	{0XC0584F0C, nullptr,                                            "sceKernelGetModuleList",                  '?', ""   },
 	{0XCF8A41B1, &WrapU_C<sceKernelFindModuleByName>,                "sceKernelFindModuleByName",               'x', "s",      HLE_KERNEL_SYSCALL },
@@ -294,7 +300,11 @@ void RegisterAllModules() {
 	Register_sceNetUpnp();
 	Register_sceNetIfhandle();
 	Register_KUBridge();
-
+	Register_sceUsbAcc();
+	Register_sceUsbMic();
+	Register_sceOpenPSID_driver();
+	Register_semaphore();
+	Register_sceDdrdb();
 	// add new modules here.
 }
 

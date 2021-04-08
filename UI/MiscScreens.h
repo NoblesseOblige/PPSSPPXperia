@@ -22,12 +22,15 @@
 #include <string>
 #include <vector>
 
-#include "file/file_util.h"
-#include "ui/ui_screen.h"
+#include "Common/UI/UIScreen.h"
+#include "Common/File/DirListing.h"
 
 struct ShaderInfo;
+struct TextureShaderInfo;
 
 extern std::string boot_filename;
+void UIBackgroundInit(UIContext &dc);
+void UIBackgroundShutdown();
 
 inline void NoOpVoidBool(bool) {}
 
@@ -37,7 +40,6 @@ public:
 protected:
 	void DrawBackground(UIContext &dc) override;
 	void sendMessage(const char *message, const char *value) override;
-	UI::EventReturn OnLanguageChange(UI::EventParams &e);
 };
 
 class UIScreenWithGameBackground : public UIScreenWithBackground {
@@ -56,7 +58,6 @@ public:
 protected:
 	void DrawBackground(UIContext &dc) override;
 	void sendMessage(const char *message, const char *value) override;
-	UI::EventReturn OnLanguageChange(UI::EventParams &e);
 
 	void AddStandardBack(UI::ViewGroup *parent);
 };
@@ -77,6 +78,8 @@ public:
 		std::function<void(bool)> callback = &NoOpVoidBool);
 
 	void CreateViews() override;
+
+	void TriggerFinish(DialogResult result) override;
 
 private:
 	UI::EventReturn OnYes(UI::EventParams &e);
@@ -102,34 +105,47 @@ private:
 
 class PostProcScreen : public ListPopupScreen {
 public:
-	PostProcScreen(const std::string &title);
+	PostProcScreen(const std::string &title, int id);
 
 private:
 	void OnCompleted(DialogResult result) override;
 	bool ShowButtons() const override { return true; }
 	std::vector<ShaderInfo> shaders_;
+	int id_;
+};
+
+class TextureShaderScreen : public ListPopupScreen {
+public:
+	TextureShaderScreen(const std::string &title);
+
+private:
+	void OnCompleted(DialogResult result) override;
+	bool ShowButtons() const override { return true; }
+	std::vector<TextureShaderInfo> shaders_;
 };
 
 class LogoScreen : public UIScreen {
 public:
-	LogoScreen()
-		: frames_(0), switched_(false) {}
+	LogoScreen(bool gotoGameSettings = false);
 	bool key(const KeyInput &key) override;
-	void update(InputState &input) override;
+	bool touch(const TouchInput &touch) override;
+	void update() override;
 	void render() override;
 	void sendMessage(const char *message, const char *value) override;
 	void CreateViews() override {}
 
 private:
 	void Next();
-	int frames_;
-	bool switched_;
+	int frames_ = 0;
+	double sinceStart_ = 0.0;
+	bool switched_ = false;
+	bool gotoGameSettings_ = false;
 };
 
 class CreditsScreen : public UIDialogScreenWithBackground {
 public:
-	CreditsScreen() : frames_(0) {}
-	void update(InputState &input) override;
+	CreditsScreen();
+	void update() override;
 	void render() override;
 
 	void CreateViews() override;
@@ -139,14 +155,11 @@ private:
 
 	UI::EventReturn OnSupport(UI::EventParams &e);
 	UI::EventReturn OnPPSSPPOrg(UI::EventParams &e);
+	UI::EventReturn OnPrivacy(UI::EventParams &e);
 	UI::EventReturn OnForums(UI::EventParams &e);
-	UI::EventReturn OnChineseForum(UI::EventParams &e);
+	UI::EventReturn OnDiscord(UI::EventParams &e);
 	UI::EventReturn OnShare(UI::EventParams &e);
 	UI::EventReturn OnTwitter(UI::EventParams &e);
 
-	int frames_;
+	double startTime_ = 0.0;
 };
-
-
-// Utility functions that create various popup screens
-ListPopupScreen *CreateLanguageScreen();

@@ -1,22 +1,25 @@
 package org.ppsspp.ppsspp;
 
-
 // Note that the display* methods are in NativeRenderer.java
 
 public class NativeApp {
-	public final static int DEVICE_ID_DEFAULT = 0;
-	public final static int DEVICE_ID_KEYBOARD = 1;
-	public final static int DEVICE_ID_MOUSE = 2;
-	public final static int DEVICE_ID_PAD_0 = 10;
+	public static final int DEVICE_ID_DEFAULT = 0;
+	public static final int DEVICE_ID_KEYBOARD = 1;
+	public static final int DEVICE_ID_MOUSE = 2;
+	public static final int DEVICE_ID_PAD_0 = 10;
 
-	public final static int DEVICE_TYPE_MOBILE = 0;
-	public final static int DEVICE_TYPE_TV = 1;
-	public final static int DEVICE_TYPE_DESKTOP = 2;
+	public static final int DEVICE_TYPE_MOBILE = 0;
+	public static final int DEVICE_TYPE_TV = 1;
+	public static final int DEVICE_TYPE_DESKTOP = 2;
 
-	public static native void init(String model, int deviceType, String languageRegion, String apkPath, String dataDir, String externalDir, String libraryDir, String cacheDir, String shortcutParam, int androidVersion, String board);
+	public static native void init(String model, int deviceType, String languageRegion, String apkPath, String dataDir, String externalStorageDir, String extFilesDir, String additionalStorageDirs, String libraryDir, String cacheDir, String shortcutParam, int androidVersion, String board);
 	public static native void audioInit();
 	public static native void audioShutdown();
 	public static native void audioConfig(int optimalFramesPerBuffer, int optimalSampleRate);
+
+	public static native void audioRecording_SetSampleRate(int sampleRate);
+	public static native void audioRecording_Start();
+	public static native void audioRecording_Stop();
 
 	public static native void computeDesiredBackbufferDimensions();
 	public static native int getDesiredBackbufferWidth();
@@ -32,7 +35,6 @@ public class NativeApp {
 	public static native void pause();
 	public static native void resume();
 
-	// There's not really any reason to ever call shutdown as we can recover from a killed activity.
 	public static native void shutdown();
 
 	public static native boolean keyDown(int deviceId, int key, boolean isRepeat);
@@ -44,16 +46,18 @@ public class NativeApp {
 
 	public static native boolean mouseWheelEvent(float x, float y);
 
-	// will only be called between init() and shutdown()
-	public static native int audioRender(short[] buffer);
-
 	// Sensor/input data. These are asynchronous, beware!
 	public static native boolean touch(float x, float y, int data, int pointerId);
 
 	public static native boolean accelerometer(float x, float y, float z);
 
 	public static native void sendMessage(String msg, String arg);
+	public static native void sendInputBox(String seqID, boolean result, String value);
 
 	public static native String queryConfig(String queryName);
-}
 
+	public static native int getSelectedCamera();
+	public static native void setGpsDataAndroid(long time, float hdop, float latitude, float longitude, float altitude, float speed, float bearing);
+	public static native void setSatInfoAndroid(short index, short id, short elevation, short azimuth, short snr, short good);
+	public static native void pushCameraImageAndroid(byte[] image);
+}

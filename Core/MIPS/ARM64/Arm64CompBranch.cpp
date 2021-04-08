@@ -18,10 +18,12 @@
 #include "ppsspp_config.h"
 #if PPSSPP_ARCH(ARM64)
 
-#include "profiler/profiler.h"
+#include "Common/Data/Convert/SmallDataConvert.h"
+#include "Common/Profiler/Profiler.h"
 
-#include "Core/Reporting.h"
 #include "Core/Config.h"
+#include "Core/Core.h"
+#include "Core/Reporting.h"
 #include "Core/MemMap.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/HLETables.h"
@@ -46,8 +48,9 @@
 #define _SA MIPS_GET_SA(op)
 #define _POS  ((op>> 6) & 0x1F)
 #define _SIZE ((op>>11) & 0x1F)
-#define _IMM16 (signed short)(op & 0xFFFF)
 #define _IMM26 (op & 0x03FFFFFF)
+#define TARGET16 ((int)(SignExtend16ToU32(op) << 2))
+#define TARGET26 (_IMM26 << 2)
 
 #define LOOPOPTIMIZATION 0
 
@@ -68,7 +71,7 @@ void Arm64Jit::BranchRSRTComp(MIPSOpcode op, CCFlags cc, bool likely)
 		ERROR_LOG_REPORT(JIT, "Branch in RSRTComp delay slot at %08x in block starting at %08x", GetCompilerPC(), js.blockStart);
 		return;
 	}
-	int offset = _IMM16 << 2;
+	int offset = TARGET16;
 	MIPSGPReg rt = _RT;
 	MIPSGPReg rs = _RS;
 	u32 targetAddr = GetCompilerPC() + offset + 4;
@@ -85,7 +88,7 @@ void Arm64Jit::BranchRSRTComp(MIPSOpcode op, CCFlags cc, bool likely)
 		{
 		case CC_EQ: immBranchNotTaken = rsImm == rtImm; break;
 		case CC_NEQ: immBranchNotTaken = rsImm != rtImm; break;
-		default: immBranchNotTaken = false; _dbg_assert_msg_(JIT, false, "Bad cc flag in BranchRSRTComp().");
+		default: immBranchNotTaken = false; _dbg_assert_msg_(false, "Bad cc flag in BranchRSRTComp().");
 		}
 		immBranch = true;
 		immBranchTaken = !immBranchNotTaken;
@@ -128,26 +131,56 @@ void Arm64Jit::BranchRSRTComp(MIPSOpcode op, CCFlags cc, bool likely)
 
 		// We might be able to flip the condition (EQ/NEQ are easy.)
 		const bool canFlip = cc == CC_EQ || cc == CC_NEQ;
-
-		// TODO ARM64: Optimize for immediates other than zero
-		if (rt == 0) {
-			gpr.MapIn(rs);
-			CMP(gpr.R(rs), 0);
-		} else {
-			gpr.MapInIn(rs, rt);
-			CMP(gpr.R(rs), gpr.R(rt));
-		}
+		const bool rsIsZero = gpr.IsImm(rs) && gpr.GetImm(rs) == 0;
+		const bool rtIsZero = gpr.IsImm(rt) && gpr.GetImm(rt) == 0;
 
 		Arm64Gen::FixupBranch ptr;
-		if (!likely) {
-			if (!delaySlotIsNice)
-				CompileDelaySlot(DELAYSLOT_SAFE_FLUSH);
-			else
-				FlushAll();
-			ptr = B(cc);
-		} else {
+		if ((likely || delaySlotIsNice) && (rsIsZero || rtIsZero) && canFlip) {
+			// Special case, we can just use CBZ/CBNZ directly.
+			MIPSGPReg r = rsIsZero ? rt : rs;
+			gpr.MapReg(r);
+			// Flush should keep r in the same armreg.
+			ARM64Reg ar = gpr.R(r);
 			FlushAll();
-			ptr = B(cc);
+			if (cc == CC_EQ) {
+				ptr = CBZ(ar);
+			} else {
+				ptr = CBNZ(ar);
+			}
+		} else {
+			u32 val;
+			bool shift;
+			if (gpr.IsImm(rt) && IsImmArithmetic(gpr.GetImm(rt), &val, &shift)) {
+				gpr.MapReg(rs);
+				CMP(gpr.R(rs), val, shift);
+			} else if (gpr.IsImm(rt) && IsImmArithmetic((u64)(s64)-(s32)gpr.GetImm(rt), &val, &shift)) {
+				gpr.MapReg(rs);
+				CMN(gpr.R(rs), val, shift);
+			} else if (gpr.IsImm(rs) && IsImmArithmetic(gpr.GetImm(rs), &val, &shift) && canFlip) {
+				gpr.MapReg(rt);
+				CMP(gpr.R(rt), val, shift);
+			} else if (gpr.IsImm(rs) && IsImmArithmetic((u64)(s64)-(s32)gpr.GetImm(rs), &val, &shift) && canFlip) {
+				gpr.MapReg(rt);
+				CMN(gpr.R(rt), val, shift);
+			} else {
+				gpr.MapInIn(rs, rt);
+				CMP(gpr.R(rs), gpr.R(rt));
+			}
+
+			if (!likely) {
+				if (!delaySlotIsNice)
+					CompileDelaySlot(DELAYSLOT_SAFE_FLUSH);
+				else
+					FlushAll();
+				ptr = B(cc);
+			} else {
+				FlushAll();
+				ptr = B(cc);
+			}
+		}
+
+		if (likely) {
+			// Only executed when taking the branch.
 			CompileDelaySlot(DELAYSLOT_FLUSH);
 		}
 
@@ -169,7 +202,7 @@ void Arm64Jit::BranchRSZeroComp(MIPSOpcode op, CCFlags cc, bool andLink, bool li
 		ERROR_LOG_REPORT(JIT, "Branch in RSZeroComp delay slot at %08x in block starting at %08x", GetCompilerPC(), js.blockStart);
 		return;
 	}
-	int offset = _IMM16 << 2;
+	int offset = TARGET16;
 	MIPSGPReg rs = _RS;
 	u32 targetAddr = GetCompilerPC() + offset + 4;
 
@@ -186,7 +219,7 @@ void Arm64Jit::BranchRSZeroComp(MIPSOpcode op, CCFlags cc, bool andLink, bool li
 		case CC_GE: immBranchNotTaken = imm >= 0; break;
 		case CC_LT: immBranchNotTaken = imm < 0; break;
 		case CC_LE: immBranchNotTaken = imm <= 0; break;
-		default: immBranchNotTaken = false; _dbg_assert_msg_(JIT, false, "Bad cc flag in BranchRSZeroComp().");
+		default: immBranchNotTaken = false; _dbg_assert_msg_(false, "Bad cc flag in BranchRSZeroComp().");
 		}
 		immBranch = true;
 		immBranchTaken = !immBranchNotTaken;
@@ -234,7 +267,6 @@ void Arm64Jit::BranchRSZeroComp(MIPSOpcode op, CCFlags cc, bool andLink, bool li
 		if (!likely && delaySlotIsNice)
 			CompileDelaySlot(DELAYSLOT_NICE);
 
-		// TODO: Maybe we could use BZ here?
 		gpr.MapReg(rs);
 		CMP(gpr.R(rs), 0);
 
@@ -286,7 +318,7 @@ void Arm64Jit::Comp_RelBranch(MIPSOpcode op)
 	case 23: BranchRSZeroComp(op, CC_LE, false, true); break;//bgtzl
 
 	default:
-		_dbg_assert_msg_(CPU,0,"Trying to compile instruction that can't be compiled");
+		_dbg_assert_msg_(false,"Trying to compile instruction that can't be compiled");
 		break;
 	}
 }
@@ -304,7 +336,7 @@ void Arm64Jit::Comp_RelBranchRI(MIPSOpcode op)
 	case 18: BranchRSZeroComp(op, CC_GE, true, true);  break;  //R(MIPS_REG_RA) = PC + 8; if ((s32)R(rs) <  0) DelayBranchTo(addr); else SkipLikely(); break;//bltzall
 	case 19: BranchRSZeroComp(op, CC_LT, true, true);   break; //R(MIPS_REG_RA) = PC + 8; if ((s32)R(rs) >= 0) DelayBranchTo(addr); else SkipLikely(); break;//bgezall
 	default:
-		_dbg_assert_msg_(CPU,0,"Trying to compile instruction that can't be compiled");
+		_dbg_assert_msg_(false,"Trying to compile instruction that can't be compiled");
 		break;
 	}
 }
@@ -315,7 +347,7 @@ void Arm64Jit::BranchFPFlag(MIPSOpcode op, CCFlags cc, bool likely) {
 		ERROR_LOG_REPORT(JIT, "Branch in FPFlag delay slot at %08x in block starting at %08x", GetCompilerPC(), js.blockStart);
 		return;
 	}
-	int offset = _IMM16 << 2;
+	int offset = TARGET16;
 	u32 targetAddr = GetCompilerPC() + offset + 4;
 
 	MIPSOpcode delaySlotOp = GetOffsetInstruction(1);
@@ -324,19 +356,24 @@ void Arm64Jit::BranchFPFlag(MIPSOpcode op, CCFlags cc, bool likely) {
 	if (!likely && delaySlotIsNice)
 		CompileDelaySlot(DELAYSLOT_NICE);
 
-	// TODO: Maybe we could use TBZ here?
 	gpr.MapReg(MIPS_REG_FPCOND);
-	TSTI2R(gpr.R(MIPS_REG_FPCOND), 1, SCRATCH1);
 	Arm64Gen::FixupBranch ptr;
-	if (!likely) {
-		if (!delaySlotIsNice)
-			CompileDelaySlot(DELAYSLOT_SAFE_FLUSH);
-		else
-			FlushAll();
-		ptr = B(cc);
-	} else {
+	if (likely || delaySlotIsNice) {
+		// FlushAll() won't actually change the reg.
+		ARM64Reg ar = gpr.R(MIPS_REG_FPCOND);
 		FlushAll();
+		if (cc == CC_EQ) {
+			ptr = TBZ(ar, 0);
+		} else {
+			ptr = TBNZ(ar, 0);
+		}
+	} else {
+		TSTI2R(gpr.R(MIPS_REG_FPCOND), 1, SCRATCH1);
+		CompileDelaySlot(DELAYSLOT_SAFE_FLUSH);
 		ptr = B(cc);
+	}
+
+	if (likely) {
 		CompileDelaySlot(DELAYSLOT_FLUSH);
 	}
 
@@ -356,7 +393,7 @@ void Arm64Jit::Comp_FPUBranch(MIPSOpcode op) {
 	case 2: BranchFPFlag(op, CC_NEQ, true);  break;  // bc1fl
 	case 3: BranchFPFlag(op, CC_EQ, true);  break;  // bc1tl
 	default:
-		_dbg_assert_msg_(CPU, 0, "Trying to interpret instruction that can't be interpreted");
+		_dbg_assert_msg_( 0, "Trying to interpret instruction that can't be interpreted");
 		break;
 	}
 }
@@ -367,7 +404,7 @@ void Arm64Jit::BranchVFPUFlag(MIPSOpcode op, CCFlags cc, bool likely) {
 		ERROR_LOG_REPORT(JIT, "Branch in VFPU delay slot at %08x in block starting at %08x", GetCompilerPC(), js.blockStart);
 		return;
 	}
-	int offset = _IMM16 << 2;
+	int offset = TARGET16;
 	u32 targetAddr = GetCompilerPC() + offset + 4;
 
 	MIPSOpcode delaySlotOp = GetOffsetInstruction(1);
@@ -385,28 +422,26 @@ void Arm64Jit::BranchVFPUFlag(MIPSOpcode op, CCFlags cc, bool likely) {
 
 	int imm3 = (op >> 18) & 7;
 
-	// TODO: Maybe could use TBZ?
 	gpr.MapReg(MIPS_REG_VFPUCC);
-	TSTI2R(gpr.R(MIPS_REG_VFPUCC), 1 << imm3, SCRATCH1);
-
 	Arm64Gen::FixupBranch ptr;
-	js.inDelaySlot = true;
-	if (!likely)
-	{
-		if (!delaySlotIsNice && !delaySlotIsBranch)
-			CompileDelaySlot(DELAYSLOT_SAFE_FLUSH);
-		else
-			FlushAll();
-		ptr = B(cc);
-	}
-	else
-	{
+	if (likely || delaySlotIsNice || delaySlotIsBranch) {
+		// FlushAll() won't actually change the reg.
+		ARM64Reg ar = gpr.R(MIPS_REG_VFPUCC);
 		FlushAll();
+		if (cc == CC_EQ) {
+			ptr = TBZ(ar, imm3);
+		} else {
+			ptr = TBNZ(ar, imm3);
+		}
+	} else {
+		TSTI2R(gpr.R(MIPS_REG_VFPUCC), 1 << imm3, SCRATCH1);
+		CompileDelaySlot(DELAYSLOT_SAFE_FLUSH);
 		ptr = B(cc);
-		if (!delaySlotIsBranch)
-			CompileDelaySlot(DELAYSLOT_FLUSH);
 	}
-	js.inDelaySlot = false;
+
+	if (likely && !delaySlotIsBranch) {
+		CompileDelaySlot(DELAYSLOT_FLUSH);
+	}
 
 	// Take the branch
 	WriteExit(targetAddr, js.nextExit++);
@@ -429,12 +464,16 @@ void Arm64Jit::Comp_VBranch(MIPSOpcode op)
 	}
 }
 
+static void HitInvalidJump(uint32_t dest) {
+	Core_ExecException(dest, currentMIPS->pc - 8, ExecExceptionType::JUMP);
+}
+
 void Arm64Jit::Comp_Jump(MIPSOpcode op) {
 	if (js.inDelaySlot) {
 		ERROR_LOG_REPORT(JIT, "Branch in Jump delay slot at %08x in block starting at %08x", GetCompilerPC(), js.blockStart);
 		return;
 	}
-	u32 off = _IMM26 << 2;
+	u32 off = TARGET26;
 	u32 targetAddr = (GetCompilerPC() & 0xF0000000) | off;
 
 	// Might be a stubbed address or something?
@@ -445,6 +484,13 @@ void Arm64Jit::Comp_Jump(MIPSOpcode op) {
 			js.compiling = false;
 		}
 		// TODO: Mark this block dirty or something?  May be indication it will be changed by imports.
+		CompileDelaySlot(DELAYSLOT_NICE);
+		FlushAll();
+		gpr.SetRegImm(SCRATCH1, GetCompilerPC() + 8);
+		MovToPC(SCRATCH1);
+		MOVI2R(W0, targetAddr);
+		QuickCallFunction(SCRATCH1, (const void *)&HitInvalidJump);
+		WriteSyscallExit();
 		return;
 	}
 
@@ -482,7 +528,7 @@ void Arm64Jit::Comp_Jump(MIPSOpcode op) {
 		break;
 
 	default:
-		_dbg_assert_msg_(CPU,0,"Trying to compile instruction that can't be compiled");
+		_dbg_assert_msg_(false,"Trying to compile instruction that can't be compiled");
 		break;
 	}
 	js.compiling = false;
@@ -504,7 +550,7 @@ void Arm64Jit::Comp_JumpReg(MIPSOpcode op)
 		delaySlotIsNice = false;
 	CONDITIONAL_NICE_DELAYSLOT;
 
-	ARM64Reg destReg = OTHERTEMPREG;
+	ARM64Reg destReg = INVALID_REG;
 	if (IsSyscall(delaySlotOp)) {
 		gpr.MapReg(rs);
 		MovToPC(gpr.R(rs));  // For syscall to be able to return.
@@ -542,7 +588,9 @@ void Arm64Jit::Comp_JumpReg(MIPSOpcode op)
 		destReg = gpr.R(rs);  // Safe because FlushAll doesn't change any regs
 		FlushAll();
 	} else {
-		// Delay slot - this case is very rare, might be able to free up R8.
+		// Since we can't be in a delay slot, should be safe to steal FLAGTEMPREG for a temp reg.
+		// It will be saved, even if a function is called.
+		destReg = DecodeReg(FLAGTEMPREG);
 		gpr.MapReg(rs);
 		MOV(destReg, gpr.R(rs));
 		if (andLink)
@@ -558,7 +606,7 @@ void Arm64Jit::Comp_JumpReg(MIPSOpcode op)
 	case 9: //jalr
 		break;
 	default:
-		_dbg_assert_msg_(CPU,0,"Trying to compile instruction that can't be compiled");
+		_dbg_assert_msg_(false,"Trying to compile instruction that can't be compiled");
 		break;
 	}
 
@@ -569,6 +617,9 @@ void Arm64Jit::Comp_JumpReg(MIPSOpcode op)
 	
 void Arm64Jit::Comp_Syscall(MIPSOpcode op)
 {
+	if (op.encoding == 0x03FFFFcc) {
+		WARN_LOG(JIT, "Encountered bad syscall instruction at %08x (%08x)", js.compilerPC, op.encoding);
+	}
 	if (!g_Config.bSkipDeadbeefFilling)
 	{
 		// All of these will be overwritten with DEADBEEF anyway.
@@ -591,6 +642,11 @@ void Arm64Jit::Comp_Syscall(MIPSOpcode op)
 	RestoreRoundingMode();
 	js.downcountAmount = -offset;
 
+	if (!js.inDelaySlot) {
+		gpr.SetRegImm(SCRATCH1, GetCompilerPC() + 4);
+		MovToPC(SCRATCH1);
+	}
+
 	FlushAll();
 
 	SaveStaticRegisters();
@@ -602,7 +658,7 @@ void Arm64Jit::Comp_Syscall(MIPSOpcode op)
 	// Skip the CallSyscall where possible.
 	void *quickFunc = GetQuickSyscallFunc(op);
 	if (quickFunc) {
-		MOVI2R(X0, (uintptr_t)GetSyscallInfo(op));
+		MOVI2R(X0, (uintptr_t)GetSyscallFuncPointer(op));
 		// Already flushed, so X1 is safe.
 		QuickCallFunction(X1, quickFunc);
 	} else {

@@ -2,12 +2,10 @@
 
 #include <string>
 #include <list>
+#include <mutex>
 
-#include "base/mutex.h"
-#include "base/basictypes.h"
-#include "math/geom2d.h"
-
-#include "ui/view.h"
+#include "Common/Math/geom2d.h"
+#include "Common/UI/View.h"
 
 class DrawBuffer;
 
@@ -37,15 +35,15 @@ public:
 	const std::list<Message> &Messages() { return messages_; }
 
 private:
-
 	std::list<Message> messages_;
-	recursive_mutex mutex_;
+	std::mutex mutex_;
 };
 
 class OnScreenMessagesView : public UI::InertView {
 public:
 	OnScreenMessagesView(UI::LayoutParams *layoutParams = nullptr) : UI::InertView(layoutParams) {}
-	void Draw(UIContext &dc);
+	void Draw(UIContext &dc) override;
+	std::string DescribeText() const override;
 };
 
 extern OnScreenMessages osm;

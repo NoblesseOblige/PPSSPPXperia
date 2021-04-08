@@ -18,13 +18,16 @@
 #pragma once
 
 #include <cmath>
-#include "Globals.h"
-#include "Common/Common.h"
 
-#include "math/fast/fast_matrix.h"
+#include "Common/Common.h"
+#include "Core/Util/AudioFormat.h"  // for clamp_u8
+#include "Common/Math/fast/fast_matrix.h"
 
 #if defined(_M_SSE)
 #include <emmintrin.h>
+#if _M_SSE >= 0x401
+#include <smmintrin.h>
+#endif
 #endif
 
 namespace Math3D {
@@ -177,8 +180,6 @@ public:
 	const Vec2 ts() const { return Vec2(y, x); }
 };
 
-typedef Vec2<float> Vec2f;
-
 template<typename T>
 class Vec3Packed;
 
@@ -295,8 +296,10 @@ public:
 	void SetLength(const float l);
 	Vec3 WithLength(const float l) const;
 	float Distance2To(Vec3 &other);
-	Vec3 Normalized() const;
+	Vec3 Normalized(bool useSSE4 = false) const;
+	Vec3 NormalizedOr001(bool useSSE4 = false) const;
 	float Normalize(); // returns the previous length, which is often useful
+	float NormalizeOr001();
 
 	T& operator [] (int i) //allow vector[2] = 3   (vector.z=3)
 	{
@@ -599,6 +602,10 @@ public:
 	{
 		return Vec4(x*other.x, y*other.y, z*other.z, w*other.w);
 	}
+	Vec4 operator | (const Vec4 &other) const
+	{
+		return Vec4(x | other.x, y | other.y, z | other.z, w | other.w);
+	}
 	template<typename V>
 	Vec4 operator * (const V& f) const
 	{
@@ -620,6 +627,10 @@ public:
 		*this = *this / f;
 	}
 
+	bool operator ==(const Vec4 &other) const {
+		return x == other.x && y == other.y && z == other.z && w == other.w;
+	}
+
 	T Length2() const
 	{
 		return x*x + y*y + z*z + w*w;
@@ -628,6 +639,12 @@ public:
 	Vec4 Clamp(const T &l, const T &h) const
 	{
 		return Vec4(VecClamp(x, l, h), VecClamp(y, l, h), VecClamp(z, l, h), VecClamp(w, l, h));
+	}
+
+	Vec4 Reciprocal() const
+	{
+		const T one = 1.0f;
+		return Vec4(one / x, one / y, one / z, one / w);
 	}
 
 	// Only implemented for T=float
@@ -807,13 +824,13 @@ private:
 
 }; // namespace Math3D
 
+typedef Math3D::Vec2<float> Vec2f;
 typedef Math3D::Vec3<float> Vec3f;
 typedef Math3D::Vec3Packed<float> Vec3Packedf;
 typedef Math3D::Vec4<float> Vec4f;
 
-
-inline void Vec3ByMatrix43(float vecOut[3], const float v[3], const float m[12])
-{
+// v and vecOut must point to different memory.
+inline void Vec3ByMatrix43(float vecOut[3], const float v[3], const float m[12]) {
 	vecOut[0] = v[0] * m[0] + v[1] * m[3] + v[2] * m[6] + m[9];
 	vecOut[1] = v[0] * m[1] + v[1] * m[4] + v[2] * m[7] + m[10];
 	vecOut[2] = v[0] * m[2] + v[1] * m[5] + v[2] * m[8] + m[11];
@@ -885,6 +902,14 @@ inline void ConvertMatrix4x3To4x4Transposed(float *m4x4, const float *m4x3) {
 	m4x4[15] = 1.0f;
 }
 
+// 0369
+// 147A
+// 258B
+// ->>-
+// 0123
+// 4567
+// 89AB
+// Don't see a way to SIMD that. Should be pretty fast anyway.
 inline void ConvertMatrix4x3To3x4Transposed(float *m4x4, const float *m4x3) {
 	m4x4[0] = m4x3[0];
 	m4x4[1] = m4x3[3];
@@ -1064,6 +1089,69 @@ __forceinline void Vec4<T>::ToRGBA(u8 *rgba) const
 {
 	*(u32 *)rgba = ToRGBA();
 }
+
+#if defined(_M_SSE)
+// Specialized for SIMD optimization
+
+// Vec3<float> operation
+template<>
+inline void Vec3<float>::operator += (const Vec3<float> &other)
+{
+	vec = _mm_add_ps(vec, other.vec);
+}
+
+template<>
+inline Vec3<float> Vec3<float>::operator + (const Vec3 &other) const
+{
+	return Vec3<float>(_mm_add_ps(vec, other.vec));
+}
+
+template<>
+inline Vec3<float> Vec3<float>::operator * (const Vec3 &other) const
+{
+	return Vec3<float>(_mm_mul_ps(vec, other.vec));
+}
+
+template<> template<>
+inline Vec3<float> Vec3<float>::operator * (const float &other) const
+{
+	return Vec3<float>(_mm_mul_ps(vec, _mm_set_ps1(other)));
+}
+
+// Vec4<float> operation
+template<>
+inline void Vec4<float>::operator += (const Vec4<float> &other)
+{
+	vec = _mm_add_ps(vec, other.vec);
+}
+
+template<>
+inline Vec4<float> Vec4<float>::operator + (const Vec4 &other) const
+{
+	return Vec4<float>(_mm_add_ps(vec, other.vec));
+}
+
+template<>
+inline Vec4<float> Vec4<float>::operator * (const Vec4 &other) const
+{
+	return Vec4<float>(_mm_mul_ps(vec, other.vec));
+}
+
+template<> template<>
+inline Vec4<float> Vec4<float>::operator * (const float &other) const
+{
+	return Vec4<float>(_mm_mul_ps(vec, _mm_set_ps1(other)));
+}
+
+// Vec3<float> cross product
+template<>
+inline Vec3<float> Cross(const Vec3<float> &a, const Vec3<float> &b)
+{
+	const __m128 left = _mm_mul_ps(_mm_shuffle_ps(a.vec, a.vec, _MM_SHUFFLE(3, 0, 2, 1)), _mm_shuffle_ps(b.vec, b.vec, _MM_SHUFFLE(3, 1, 0, 2)));
+	const __m128 right = _mm_mul_ps(_mm_shuffle_ps(a.vec, a.vec, _MM_SHUFFLE(3, 1, 0, 2)), _mm_shuffle_ps(b.vec, b.vec, _MM_SHUFFLE(3, 0, 2, 1)));
+	return _mm_sub_ps(left, right);
+}
+#endif
 
 }; // namespace Math3D
 

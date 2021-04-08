@@ -19,9 +19,10 @@
 
 #include "GPU/GPUCommon.h"
 #include "GPU/Common/GPUDebugInterface.h"
-#include "thin3d/thin3d.h"
+#include "Common/GPU/thin3d.h"
 
-typedef struct {
+struct FormatBuffer {
+	FormatBuffer() { data = nullptr; }
 	union {
 		u8 *data;
 		u16 *as16;
@@ -43,20 +44,26 @@ typedef struct {
 	inline u32 Get32(int x, int y, int stride) {
 		return as32[x + y * stride];
 	}
-} FormatBuffer;
 
-class ShaderManager;
+	inline u16 *Get16Ptr(int x, int y, int stride) {
+		return &as16[x + y * stride];
+	}
+};
+
+class PresentationCommon;
+class SoftwareDrawEngine;
 
 class SoftGPU : public GPUCommon {
 public:
-	SoftGPU(GraphicsContext *gfxCtx, Draw::DrawContext *_thin3D);
+	SoftGPU(GraphicsContext *gfxCtx, Draw::DrawContext *draw);
 	~SoftGPU();
+
+	void CheckGPUFeatures() override {}
 	void InitClear() override {}
 	void ExecuteOp(u32 op, u32 diff) override;
 
-	void BeginFrame() override {}
 	void SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) override;
-	void CopyDisplayToOutput() override;
+	void CopyDisplayToOutput(bool reallyDirty) override;
 	void GetStats(char *buffer, size_t bufsize) override;
 	void InvalidateCache(u32 addr, int size, GPUInvalidationType type) override;
 	void NotifyVideoUpload(u32 addr, int size, int width, int format) override;
@@ -69,9 +76,8 @@ public:
 
 	void DeviceLost() override;
 	void DeviceRestore() override;
-	void DumpNextFrame() override {}
 
-	void Resized() override {}
+	void Resized() override;
 	void GetReportingInfo(std::string &primaryInfo, std::string &fullInfo) override {
 		primaryInfo = "Software";
 		fullInfo = "Software";
@@ -84,28 +90,41 @@ public:
 	}
 
 	bool GetCurrentFramebuffer(GPUDebugBuffer &buffer, GPUDebugFramebufferType type, int maxRes = -1) override;
+	bool GetOutputFramebuffer(GPUDebugBuffer &buffer) override;
 	bool GetCurrentDepthbuffer(GPUDebugBuffer &buffer) override;
 	bool GetCurrentStencilbuffer(GPUDebugBuffer &buffer) override;
 	bool GetCurrentTexture(GPUDebugBuffer &buffer, int level) override;
 	bool GetCurrentClut(GPUDebugBuffer &buffer) override;
 	bool GetCurrentSimpleVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices) override;
 
+	bool DescribeCodePtr(const u8 *ptr, std::string &name) override;
+
 protected:
 	void FastRunLoop(DisplayList &list) override;
-	void ProcessEvent(GPUEvent ev) override;
 	void CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight);
+	void ConvertTextureDescFrom16(Draw::TextureDesc &desc, int srcwidth, int srcheight, u8 *overrideData = nullptr);
 
 private:
-	void CopyDisplayToOutputInternal();
-
 	bool framebufferDirty_;
 	u32 displayFramebuf_;
 	u32 displayStride_;
 	GEBufferFormat displayFormat_;
 
-	GraphicsContext *gfxCtx_;
-	Draw::Texture *fbTex;
-	Draw::DrawContext *thin3d;
-	Draw::Pipeline *texColor;
-	std::vector<u32> fbTexBuffer;
+	PresentationCommon *presentation_ = nullptr;
+	SoftwareDrawEngine *drawEngine_ = nullptr;
+
+	Draw::Texture *fbTex = nullptr;
+	std::vector<u32> fbTexBuffer_;
+};
+
+// TODO: These shouldn't be global.
+extern u32 clut[4096];
+extern FormatBuffer fb;
+extern FormatBuffer depthbuf;
+
+// Type for the DarkStalkers stretch replacement.
+enum class DSStretch {
+	Off = 0,
+	Normal,
+	Wide,
 };

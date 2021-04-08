@@ -21,7 +21,8 @@
 // Does enough to understand what's going on without having to resort to an
 // external disassembler all the time...
 
-#include <stdlib.h>
+#include <cstdlib>
+#include <cstring>
 
 #include "Common/Arm64Emitter.h"
 #include "Common/StringUtils.h"
@@ -84,7 +85,6 @@ int HighestSetBit(int value) {
 }
 
 int LowestSetBit(int value, int maximum = 32) {
-	int lowest = 0;
 	for (int i = 0; i < maximum; i++) {
 		if (value & (1 << i))
 			return i;
@@ -159,11 +159,15 @@ static void DataProcessingImmediate(uint32_t w, uint64_t addr, Instruction *inst
 		// Add/subtract immediate value
 		int op = (w >> 30) & 1;
 		int imm = ((w >> 10) & 0xFFF);
-		int shift = ((w >> 22) & 0x3) * 16;
+		int shift = ((w >> 22) & 0x1) * 12;
 		int s = ((w >> 29) & 1);
 		imm <<= shift;
 		if (s && Rd == 31) {
 			snprintf(instr->text, sizeof(instr->text), "cmp %c%d, #%d", r, Rn, imm);
+		} else if (!shift && Rn == 31 && imm == 0) {
+			snprintf(instr->text, sizeof(instr->text), "mov %c%d, sp", r, Rd);
+		} else if (!shift && Rd == 31 && imm == 0) {
+			snprintf(instr->text, sizeof(instr->text), "mov sp, %c%d", r, Rn);
 		} else {
 			snprintf(instr->text, sizeof(instr->text), "%s%s %c%d, %c%d, #%d", op == 0 ? "add" : "sub", s ? "s" : "", r, Rd, r, Rn, imm);
 		}
@@ -259,6 +263,40 @@ static void BranchExceptionAndSystem(uint32_t w, uint64_t addr, Instruction *ins
 	} else {
 		snprintf(instr->text, sizeof(instr->text), "(BRX ?? %08x)", w);
 	}
+}
+
+bool Arm64AnalyzeLoadStore(uint64_t addr, uint32_t w, Arm64LSInstructionInfo *info) {
+	*info = {};
+	info->instructionSize = 4;
+	int id = (w >> 25) & 0xF;
+	switch (id) {
+	case 4: case 6: case 0xC: case 0xE:
+		break;
+	default:
+		return false;  // not the expected instruction
+	}
+
+	info->size = w >> 30;
+	info->Rt = (w & 0x1F);
+	info->Rn = ((w >> 5) & 0x1F);
+	info->Rm = ((w >> 16) & 0x1F);
+	int opc = (w >> 22) & 0x3;
+	if (opc == 0 || opc == 2) {
+		info->isMemoryWrite = true;
+	}
+
+	if (((w >> 27) & 7) == 7) {
+		int V = (w >> 26) & 1;
+		if (V == 0) {
+			info->isIntegerLoadStore = true;
+		} else {
+			info->isFPLoadStore = true;
+		}
+	} else {
+		info->isPairLoadStore = true;
+		// TODO
+	}
+	return true;
 }
 
 static void LoadStore(uint32_t w, uint64_t addr, Instruction *instr) {

@@ -21,14 +21,21 @@ enum CheckAlphaResult {
 	// These are intended to line up with TexCacheEntry::STATUS_ALPHA_UNKNOWN, etc.
 	CHECKALPHA_FULL = 0,
 	CHECKALPHA_ANY = 4,
-	CHECKALPHA_ZERO = 8,
 };
 
+#include "ppsspp_config.h"
 #include "Common/Common.h"
+#include "Common/Swap.h"
 #include "Core/MemMap.h"
 #include "GPU/ge_constants.h"
 #include "GPU/Common/TextureDecoderNEON.h"
 #include "GPU/GPUState.h"
+
+enum TextureFiltering {
+	TEX_FILTER_AUTO = 1,
+	TEX_FILTER_FORCE_NEAREST = 2,
+	TEX_FILTER_FORCE_LINEAR = 3,
+};
 
 void SetupTextureDecoder();
 
@@ -41,35 +48,15 @@ u32 QuickTexHashSSE2(const void *checkp, u32 size);
 #define DoQuickTexHash QuickTexHashSSE2
 #define StableQuickTexHash QuickTexHashSSE2
 
-// Pitch must be aligned to 16 bits (as is the case on a PSP)
+// Pitch must be aligned to 16 bytes (as is the case on a PSP)
 void DoUnswizzleTex16Basic(const u8 *texptr, u32 *ydestp, int bxc, int byc, u32 pitch);
 #define DoUnswizzleTex16 DoUnswizzleTex16Basic
-
-#include "ext/xxhash.h"
-#define DoReliableHash32 XXH32
-#define DoReliableHash64 XXH64
-
-#ifdef _M_X64
-#define DoReliableHash XXH64
-typedef u64 ReliableHashType;
-#else
-#define DoReliableHash XXH32
-typedef u32 ReliableHashType;
-#endif
 
 // For ARM64, NEON is mandatory, so we also statically link.
 #elif PPSSPP_ARCH(ARM64)
 #define DoQuickTexHash QuickTexHashNEON
 #define StableQuickTexHash QuickTexHashNEON
 #define DoUnswizzleTex16 DoUnswizzleTex16NEON
-#define DoReliableHash32 ReliableHash32NEON
-
-#include "ext/xxhash.h"
-#define DoReliableHash64 XXH64
-
-#define DoReliableHash XXH64
-typedef u64 ReliableHashType;
-
 #else
 typedef u32 (*QuickTexHashFunc)(const void *checkp, u32 size);
 extern QuickTexHashFunc DoQuickTexHash;
@@ -77,15 +64,6 @@ extern QuickTexHashFunc StableQuickTexHash;
 
 typedef void (*UnswizzleTex16Func)(const u8 *texptr, u32 *ydestp, int bxc, int byc, u32 pitch);
 extern UnswizzleTex16Func DoUnswizzleTex16;
-
-typedef u32 (*ReliableHash32Func)(const void *input, size_t len, u32 seed);
-extern ReliableHash32Func DoReliableHash32;
-
-typedef u64 (*ReliableHash64Func)(const void *input, size_t len, u64 seed);
-extern ReliableHash64Func DoReliableHash64;
-
-#define DoReliableHash DoReliableHash32
-typedef u32 ReliableHashType;
 #endif
 
 CheckAlphaResult CheckAlphaRGBA8888Basic(const u32 *pixelData, int stride, int w, int h);
@@ -115,9 +93,9 @@ struct DXT5Block {
 	u8 alpha1; u8 alpha2;
 };
 
-void DecodeDXT1Block(u32 *dst, const DXT1Block *src, int pitch, bool ignore1bitAlpha = false);
-void DecodeDXT3Block(u32 *dst, const DXT3Block *src, int pitch);
-void DecodeDXT5Block(u32 *dst, const DXT5Block *src, int pitch);
+void DecodeDXT1Block(u32 *dst, const DXT1Block *src, int pitch, int height, bool ignore1bitAlpha);
+void DecodeDXT3Block(u32 *dst, const DXT3Block *src, int pitch, int height);
+void DecodeDXT5Block(u32 *dst, const DXT5Block *src, int pitch, int height);
 
 static const u8 textureBitsPerPixel[16] = {
 	16,  //GE_TFMT_5650,

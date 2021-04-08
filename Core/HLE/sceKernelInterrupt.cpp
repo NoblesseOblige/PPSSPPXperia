@@ -19,14 +19,17 @@
 #include <list>
 #include <map>
 
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Common/Serialize/SerializeList.h"
+#include "Common/Serialize/SerializeMap.h"
 #include "Core/MemMapHelpers.h"
 #include "Core/Reporting.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/MIPS/MIPS.h"
-#include "Common/ChunkFile.h"
 
-#include "Core/Debugger/Breakpoints.h"
+#include "Core/Debugger/MemBlockInfo.h"
 #include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceKernelThread.h"
 #include "Core/HLE/sceKernelInterrupt.h"
@@ -48,23 +51,21 @@ static const u32 PSP_NUMBER_SUBINTERRUPTS = 32;
 // INTERRUPT MANAGEMENT
 //////////////////////////////////////////////////////////////////////////
 
-class InterruptState
-{
+class InterruptState {
 public:
 	void save();
 	void restore();
 	void clear();
 
-	void DoState(PointerWrap &p)
-	{
+	void DoState(PointerWrap &p) {
 		auto s = p.Section("InterruptState", 1);
 		if (!s)
 			return;
 
-		p.Do(savedCpu);
+		Do(p, savedCpu);
 	}
 
-	ThreadContext savedCpu;
+	PSPThreadContext savedCpu;
 };
 
 // STATE
@@ -215,8 +216,8 @@ void IntrHandler::DoState(PointerWrap &p)
 	if (!s)
 		return;
 
-	p.Do(intrNumber);
-	p.Do<int, SubIntrHandler>(subIntrHandlers);
+	Do(p, intrNumber);
+	Do<int, SubIntrHandler>(p, subIntrHandlers);
 }
 
 void PendingInterrupt::DoState(PointerWrap &p)
@@ -225,8 +226,8 @@ void PendingInterrupt::DoState(PointerWrap &p)
 	if (!s)
 		return;
 
-	p.Do(intr);
-	p.Do(subintr);
+	Do(p, intr);
+	Do(p, subintr);
 }
 
 void __InterruptsInit()
@@ -246,7 +247,7 @@ void __InterruptsDoState(PointerWrap &p)
 		return;
 
 	int numInterrupts = PSP_NUMBER_INTERRUPTS;
-	p.Do(numInterrupts);
+	Do(p, numInterrupts);
 	if (numInterrupts != PSP_NUMBER_INTERRUPTS)
 	{
 		p.SetError(p.ERROR_FAILURE);
@@ -256,10 +257,10 @@ void __InterruptsDoState(PointerWrap &p)
 
 	intState.DoState(p);
 	PendingInterrupt pi(0, 0);
-	p.Do(pendingInterrupts, pi);
-	p.Do(interruptsEnabled);
-	p.Do(inInterrupt);
-	p.Do(threadBeforeInterrupt);
+	Do(p, pendingInterrupts, pi);
+	Do(p, interruptsEnabled);
+	Do(p, inInterrupt);
+	Do(p, threadBeforeInterrupt);
 }
 
 void __InterruptsDoStateLate(PointerWrap &p)
@@ -317,6 +318,7 @@ void InterruptState::restore()
 
 void InterruptState::clear()
 {
+	savedCpu.reset();
 }
 
 // http://forums.ps2dev.org/viewtopic.php?t=5687
@@ -616,6 +618,7 @@ static u32 sceKernelMemset(u32 addr, u32 fillc, u32 n)
 			Memory::Memset(addr, c, n);
 		}
 	}
+	NotifyMemInfo(MemBlockFlags::WRITE, addr, n, "KernelMemset");
 	return addr;
 }
 
@@ -654,10 +657,11 @@ static u32 sceKernelMemcpy(u32 dst, u32 src, u32 size)
 				*dstp++ = *srcp++;
 		}
 	}
-#ifndef MOBILE_DEVICE
-	CBreakPoints::ExecMemCheck(src, false, size, currentMIPS->pc);
-	CBreakPoints::ExecMemCheck(dst, true, size, currentMIPS->pc);
-#endif
+
+	const std::string tag = "KernelMemcpy/" + GetMemWriteTagAt(src, size);
+	NotifyMemInfo(MemBlockFlags::READ, src, size, tag.c_str(), tag.size());
+	NotifyMemInfo(MemBlockFlags::WRITE, dst, size, tag.c_str(), tag.size());
+
 	return dst;
 }
 
@@ -679,51 +683,118 @@ const HLEFunction Kernel_Library[] =
 	{0XD13BDE95, &WrapI_V<sceKernelCheckThreadStack>,          "sceKernelCheckThreadStack",           'i', ""     },
 	{0X1839852A, &WrapU_UUU<sceKernelMemcpy>,                  "sceKernelMemcpy",                     'x', "xxx"  },
 	{0XFA835CDE, &WrapI_I<sceKernelGetTlsAddr>,                "sceKernelGetTlsAddr",                 'i', "i"    },
+	{0X05572A5F, &WrapV_V<sceKernelExitGame>,                  "sceKernelExitGame",                   'v', ""     },
+	{0X4AC57943, &WrapI_I<sceKernelRegisterExitCallback>,      "sceKernelRegisterExitCallback",       'i', "i"    },
 };
 
-static u32 sysclib_memcpy(u32 dst, u32 src, u32 size) {
-	ERROR_LOG(SCEKERNEL, "Untested sysclib_memcpy(dest=%08x, src=%08x, size=%i)", dst, src, size);
-	memcpy(Memory::GetPointer(dst), Memory::GetPointer(src), size);
+static u32 sysclib_memcpy(u32 dst, u32 src, u32 size) {	
+	if (Memory::IsValidRange(dst, size) && Memory::IsValidRange(src, size)) {
+		memcpy(Memory::GetPointer(dst), Memory::GetPointer(src), size);
+	}
+	const std::string tag = "KernelMemcpy/" + GetMemWriteTagAt(src, size);
+	NotifyMemInfo(MemBlockFlags::READ, src, size, tag.c_str(), tag.size());
+	NotifyMemInfo(MemBlockFlags::WRITE, dst, size, tag.c_str(), tag.size());
 	return dst;
 }
 
 static u32 sysclib_strcat(u32 dst, u32 src) {
 	ERROR_LOG(SCEKERNEL, "Untested sysclib_strcat(dest=%08x, src=%08x)", dst, src);
-	strcat((char *)Memory::GetPointer(dst), (char *)Memory::GetPointer(src));
+	if (Memory::IsValidAddress(dst) && Memory::IsValidAddress(src)) {
+		strcat((char *)Memory::GetPointer(dst), (char *)Memory::GetPointer(src));
+	}
 	return dst;
 }
 
 static int sysclib_strcmp(u32 dst, u32 src) {
 	ERROR_LOG(SCEKERNEL, "Untested sysclib_strcmp(dest=%08x, src=%08x)", dst, src);
-	return strcmp((char *)Memory::GetPointer(dst), (char *)Memory::GetPointer(src));
+	if (Memory::IsValidAddress(dst) && Memory::IsValidAddress(src)) {
+		return strcmp((char *)Memory::GetPointer(dst), (char *)Memory::GetPointer(src));
+	} else {
+		// What to do? Crash, probably.
+		return 0;
+	}
 }
 
 static u32 sysclib_strcpy(u32 dst, u32 src) {
 	ERROR_LOG(SCEKERNEL, "Untested sysclib_strcpy(dest=%08x, src=%08x)", dst, src);
-	strcpy((char *)Memory::GetPointer(dst), (char *)Memory::GetPointer(src));
+	if (Memory::IsValidAddress(dst) && Memory::IsValidAddress(src)) {
+		strcpy((char *)Memory::GetPointer(dst), (char *)Memory::GetPointer(src));
+	}
 	return dst;
 }
 
 static u32 sysclib_strlen(u32 src) {
 	ERROR_LOG(SCEKERNEL, "Untested sysclib_strlen(src=%08x)", src);
-	return (u32)strlen(Memory::GetCharPointer(src));
+	if (Memory::IsValidAddress(src)) {
+		return (u32)strlen(Memory::GetCharPointer(src));
+	} else {
+		// What to do? Crash, probably.
+		return 0;
+	}
 }
 
 static int sysclib_memcmp(u32 dst, u32 src, u32 size) {
 	ERROR_LOG(SCEKERNEL, "Untested sysclib_memcmp(dest=%08x, src=%08x, size=%i)", dst, src, size);
-	return memcmp(Memory::GetCharPointer(dst), Memory::GetCharPointer(src), size);
+	if (Memory::IsValidRange(dst, size) && Memory::IsValidRange(src, size)) {
+		return memcmp(Memory::GetCharPointer(dst), Memory::GetCharPointer(src), size);
+	} else {
+		// What to do? Crash, probably.
+		return 0;
+	}
 }
 
 static int sysclib_sprintf(u32 dst, u32 fmt) {
 	ERROR_LOG(SCEKERNEL, "Unimpl sysclib_sprintf(dest=%08x, src=%08x)", dst, fmt);
-	// TODO
-	return sprintf((char *)Memory::GetPointer(dst), "%s", Memory::GetCharPointer(fmt));
+	if (Memory::IsValidAddress(dst) && Memory::IsValidAddress(fmt)) {
+		// TODO: Properly use the format string with more parameters.
+		return sprintf((char *)Memory::GetPointer(dst), "%s", Memory::GetCharPointer(fmt));
+	} else {
+		// What to do? Crash, probably.
+		return 0;
+	}
 }
 
 static u32 sysclib_memset(u32 destAddr, int data, int size) {
 	ERROR_LOG(SCEKERNEL, "Untested sysclib_memset(dest=%08x, data=%d ,size=%d)", destAddr, data, size);
-	if (Memory::IsValidAddress(destAddr))
+	if (Memory::IsValidRange(destAddr, size)) {
 		memset(Memory::GetPointer(destAddr), data, size);
+	}
+	NotifyMemInfo(MemBlockFlags::WRITE, destAddr, size, "KernelMemset");
+	return 0;
+}
+
+static int sysclib_strstr(u32 s1, u32 s2) {
+	ERROR_LOG(SCEKERNEL, "Untested sysclib_strstr(%08x, %08x)", s1, s2);
+	if (Memory::IsValidAddress(s1) && Memory::IsValidAddress(s2)) {
+		std::string str1 = Memory::GetCharPointer(s1);
+		std::string str2 = Memory::GetCharPointer(s2);
+		size_t index = str1.find(str2);
+		if (index == str1.npos) {
+			return 0;
+		}
+		return s1 + (uint32_t)index;
+	}
+	return 0;
+}
+
+static int sysclib_strncmp(u32 s1, u32 s2, u32 size) {
+	ERROR_LOG(SCEKERNEL, "Untested sysclib_strncmp(%08x, %08x, %08x)", s1, s2, size);
+	if (Memory::IsValidAddress(s1) && Memory::IsValidAddress(s2)) {
+		const char * str1 = Memory::GetCharPointer(s1);
+		const char * str2 = Memory::GetCharPointer(s2);
+		return strncmp(str1, str2, size);
+	}
+	return 0;
+}
+
+static u32 sysclib_memmove(u32 dst, u32 src, u32 size) {
+	ERROR_LOG(SCEKERNEL, "Untested sysclib_memmove(%08x, %08x, %08x)", dst, src, size);
+	if (Memory::IsValidRange(dst, size) && Memory::IsValidRange(src, size)) {
+		memmove(Memory::GetPointer(dst), Memory::GetPointer(src), size);
+	}
+	const std::string tag = "KernelMemmove/" + GetMemWriteTagAt(src, size);
+	NotifyMemInfo(MemBlockFlags::READ, src, size, tag.c_str(), tag.size());
+	NotifyMemInfo(MemBlockFlags::WRITE, dst, size, tag.c_str(), tag.size());
 	return 0;
 }
 
@@ -737,6 +808,9 @@ const HLEFunction SysclibForKernel[] =
 	{0x81D0D1F7, &WrapI_UUU<sysclib_memcmp>,                   "memcmp",                              'i', "xxx",    HLE_KERNEL_SYSCALL },
 	{0x7661E728, &WrapI_UU<sysclib_sprintf>,                   "sprintf",                             'i', "xx",     HLE_KERNEL_SYSCALL },
 	{0x10F3BB61, &WrapU_UII<sysclib_memset>,                   "memset",                              'x', "xii",    HLE_KERNEL_SYSCALL },
+	{0x0D188658, &WrapI_UU<sysclib_strstr>,                    "strstr",                              'i', "xx",     HLE_KERNEL_SYSCALL },
+	{0x7AB35214, &WrapI_UUU<sysclib_strncmp>,                  "strncmp",                             'i', "xxx",     HLE_KERNEL_SYSCALL },
+	{0xA48D2592, &WrapU_UUU<sysclib_memmove>,                  "memmove",                             'x', "xxx",     HLE_KERNEL_SYSCALL },
 };
 
 void Register_Kernel_Library()

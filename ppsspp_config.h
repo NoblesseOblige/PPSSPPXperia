@@ -5,6 +5,7 @@
 
 #define PPSSPP_ARCH(PPSSPP_FEATURE) (PPSSPP_ARCH_##PPSSPP_FEATURE)
 #define PPSSPP_PLATFORM(PPSSPP_FEATURE) (PPSSPP_PLATFORM_##PPSSPP_FEATURE)
+#define PPSSPP_API(PPSSPP_FEATURE) (PPSSPP_API_##PPSSPP_FEATURE)
 
 // ARCH defines
 #if defined(_M_IX86) || defined(__i386__)
@@ -25,7 +26,7 @@
     #endif
 #endif
 
-#if defined(__arm__)
+#if defined(__arm__) || defined(_M_ARM)
     #define PPSSPP_ARCH_ARM 1
     #define PPSSPP_ARCH_32BIT 1
 
@@ -43,20 +44,16 @@
         #define PPSSPP_ARCH_ARM_NEON 1
     #endif
 
-    //TODO: Remove this compat define
-    #ifndef ARM
-        #define ARM 1
+    #if defined(_M_ARM)
+        #define PPSSPP_ARCH_ARMV7 1
+        #define PPSSPP_ARCH_ARM_NEON 1
     #endif
 #endif
 
-#if defined(__aarch64__)
+#if defined(__aarch64__) || defined(_M_ARM64)
     #define PPSSPP_ARCH_ARM64 1
     #define PPSSPP_ARCH_64BIT 1
     #define PPSSPP_ARCH_ARM_NEON 1
-    //TODO: Remove this compat define
-    #ifndef ARM64
-        #define ARM64 1
-    #endif
 #endif
 
 #if defined(__mips64__)
@@ -65,10 +62,6 @@
 #elif defined(__mips__)
     #define PPSSPP_ARCH_MIPS 1
     #define PPSSPP_ARCH_32BIT 1
-    //TODO: Remove this compat define
-    #ifndef MIPS
-        #define MIPS 1
-    #endif
 #endif
 
 
@@ -76,29 +69,45 @@
 #if defined(_WIN32)
     // Covers both 32 and 64bit Windows
     #define PPSSPP_PLATFORM_WINDOWS 1
+	#ifdef _M_ARM
+        #define PPSSPP_ARCH_ARM_HARDFP 1
+	#endif
+	// UWP trickery
+    #if defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PARTITION)
+        #if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP) && WINAPI_FAMILY != WINAPI_FAMILY_DESKTOP_APP
+            #define PPSSPP_PLATFORM_UWP 1
+        #endif
+    #endif
 #elif defined(__APPLE__)
     #include <TargetConditionals.h>
     #if TARGET_IPHONE_SIMULATOR
         #define PPSSPP_PLATFORM_IOS 1
         #define PPSSPP_PLATFORM_IOS_SIMULATOR 1
-        //TODO: Remove this compat define
-        #ifndef IOS
-            #define IOS 1
-        #endif
     #elif TARGET_OS_IPHONE
         #define PPSSPP_PLATFORM_IOS 1
-        //TODO: Remove this compat define
-        #ifndef IOS
-            #define IOS 1
-        #endif
     #elif TARGET_OS_MAC
         #define PPSSPP_PLATFORM_MAC 1
     #else
         #error "Unknown Apple platform"
     #endif
+#elif defined(__SWITCH__)
+    #define PPSSPP_PLATFORM_SWITCH 1
 #elif defined(__ANDROID__)
     #define PPSSPP_PLATFORM_ANDROID 1
     #define PPSSPP_PLATFORM_LINUX 1
 #elif defined(__linux__)
     #define PPSSPP_PLATFORM_LINUX 1
 #endif
+
+// Windows ARM/ARM64, and Windows UWP (all), are the only platform that don't do GL at all (until Apple finally removes it)
+#if !PPSSPP_PLATFORM(WINDOWS) || ((!PPSSPP_ARCH(ARM) && !PPSSPP_ARCH(ARM64)) && !PPSSPP_PLATFORM(UWP))
+#define PPSSPP_API_ANY_GL 1
+#endif
+
+#if PPSSPP_PLATFORM(WINDOWS)
+#if !PPSSPP_PLATFORM(UWP)
+#define PPSSPP_API_D3D9 1
+#endif
+#define PPSSPP_API_D3D11 1
+#endif
+

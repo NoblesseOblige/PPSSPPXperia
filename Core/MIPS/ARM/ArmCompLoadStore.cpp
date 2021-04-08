@@ -15,27 +15,6 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-
-// Optimization ideas:
-//
-// It's common to see sequences of stores writing or reading to a contiguous set of
-// addresses in function prologues/epilogues:
-//  sw s5, 104(sp)
-//  sw s4, 100(sp)
-//  sw s3, 96(sp)
-//  sw s2, 92(sp)
-//  sw s1, 88(sp)
-//  sw s0, 84(sp)
-//  sw ra, 108(sp)
-//  mov s4, a0
-//  mov s3, a1
-//  ...
-// Such sequences could easily be detected and turned into nice contiguous
-// sequences of ARM stores instead of the current 3 instructions per sw/lw.
-//
-// Also, if we kept track of the likely register content of a cached register,
-// (pointer or data), we could avoid many BIC instructions.
-
 #include "ppsspp_config.h"
 #if PPSSPP_ARCH(ARM)
 
@@ -62,8 +41,8 @@
 // All functions should have CONDITIONAL_DISABLE, so we can narrow things down to a file quickly.
 // Currently known non working ones should have DISABLE.
 
-// #define CONDITIONAL_DISABLE { Comp_Generic(op); return; }
-#define CONDITIONAL_DISABLE ;
+// #define CONDITIONAL_DISABLE(flag) { Comp_Generic(op); return; }
+#define CONDITIONAL_DISABLE(flag) if (jo.Disabled(JitDisable::flag)) { Comp_Generic(op); return; }
 #define DISABLE { Comp_Generic(op); return; }
 
 namespace MIPSComp
@@ -132,15 +111,17 @@ namespace MIPSComp
 	}
 
 	void ArmJit::Comp_ITypeMemLR(MIPSOpcode op, bool load) {
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(LSU);
+		CheckMemoryBreakpoint();
 		int offset = (signed short)(op & 0xFFFF);
 		MIPSGPReg rt = _RT;
 		MIPSGPReg rs = _RS;
 		int o = op >> 26;
 
-		if (!js.inDelaySlot) {
+		if (!js.inDelaySlot && !jo.Disabled(JitDisable::LSU_UNALIGNED)) {
 			// Optimisation: Combine to single unaligned load/store
 			bool isLeft = (o == 34 || o == 42);
+			CheckMemoryBreakpoint(1);
 			MIPSOpcode nextOp = GetOffsetInstruction(1);
 			// Find a matching shift in opposite direction with opposite offset.
 			if (nextOp == (isLeft ? (op.encoding + (4<<26) - 3)
@@ -198,8 +179,17 @@ namespace MIPSComp
 			return;
 		}
 
-		_dbg_assert_msg_(JIT, !gpr.IsImm(rs), "Invalid immediate address?  CPU bug?");
-		load ? gpr.MapDirtyIn(rt, rs, false) : gpr.MapInIn(rt, rs);
+		// This gets hit in a few games, as a result of never-taken delay slots (some branch types
+		// conditionally execute the delay slot instructions). Ignore in those cases.
+		if (!js.inDelaySlot) {
+			_dbg_assert_msg_(!gpr.IsImm(rs), "Invalid immediate address %08x?  CPU bug?", iaddr);
+		}
+
+		if (load) {
+			gpr.MapDirtyIn(rt, rs, false);
+		} else {
+			gpr.MapInIn(rt, rs);
+		}
 
 		if (!g_Config.bFastMemory && rs != MIPS_REG_SP) {
 			SetCCAndR0ForSafeAddress(rs, offset, SCRATCHREG2, true);
@@ -279,7 +269,8 @@ namespace MIPSComp
 
 	void ArmJit::Comp_ITypeMem(MIPSOpcode op)
 	{
-		CONDITIONAL_DISABLE;
+		CONDITIONAL_DISABLE(LSU);
+		CheckMemoryBreakpoint();
 		int offset = (signed short)(op&0xFFFF);
 		bool load = false;
 		MIPSGPReg rt = _RT;
@@ -348,7 +339,7 @@ namespace MIPSComp
 					addrReg = R0;
 				}
 			} else {
-				_dbg_assert_msg_(JIT, !gpr.IsImm(rs), "Invalid immediate address?  CPU bug?");
+				_dbg_assert_msg_(!gpr.IsImm(rs), "Invalid immediate address?  CPU bug?");
 				load ? gpr.MapDirtyIn(rt, rs) : gpr.MapInIn(rt, rs);
 
 				if (!g_Config.bFastMemory && rs != MIPS_REG_SP) {
@@ -395,37 +386,19 @@ namespace MIPSComp
 	}
 
 	void ArmJit::Comp_Cache(MIPSOpcode op) {
-		//		int imm = (s16)(op & 0xFFFF);
-		//		int rs = _RS;
-		//		int addr = R(rs) + imm;
+		CONDITIONAL_DISABLE(LSU);
+
 		int func = (op >> 16) & 0x1F;
 
-		// It appears that a cache line is 0x40 (64) bytes, loops in games
-		// issue the cache instruction at that interval.
-
-		// These codes might be PSP-specific, they don't match regular MIPS cache codes very well
+		// See Int_Cache for the definitions.
 		switch (func) {
-			// Icache
-		case 8:
-			// Invalidate the instruction cache at this address
-			DISABLE;
-			break;
-			// Dcache
-		case 24:
-			// "Create Dirty Exclusive" - for avoiding a cacheline fill before writing to it.
-			// Will cause garbage on the real machine so we just ignore it, the app will overwrite the cacheline.
-			break;
-		case 25:  // Hit Invalidate - zaps the line if present in cache. Should not writeback???? scary.
-			// No need to do anything.
-			break;
-		case 27:  // D-cube. Hit Writeback Invalidate.  Tony Hawk Underground 2
-			break;
-		case 30:  // GTA LCS, a lot. Fill (prefetch).   Tony Hawk Underground 2
-			break;
-
+		case 24: break;
+		case 25: break;
+		case 27: break;
+		case 30: break;
 		default:
+			// Fall back to the interpreter.
 			DISABLE;
-			break;
 		}
 	}
 }

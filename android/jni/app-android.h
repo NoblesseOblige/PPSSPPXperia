@@ -1,8 +1,22 @@
 #pragma once
 
-#include "input/keycodes.h"
+#include "ppsspp_config.h"
 
-// Compatability we alias the keycodes
-// since native's keycodes are based on
-// android keycodes.
-typedef enum _keycode_t AndroidKeyCodes;
+#include <string>
+#include "Common/LogManager.h"
+
+#if PPSSPP_PLATFORM(ANDROID)
+
+#include <jni.h>
+
+jclass findClass(const char* name);
+JNIEnv* getEnv();
+
+#endif
+
+class AndroidLogger : public LogListener {
+public:
+	void Log(const LogMessage &message) override;
+};
+
+extern std::string g_extFilesDir;

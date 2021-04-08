@@ -9,9 +9,25 @@ do
 			QT=1
 			CMAKE_ARGS="-DUSING_QT_UI=ON ${CMAKE_ARGS}"
 			;;
+		--qtbrew) echo "Qt enabled (homebrew)"
+			QT=1
+			CMAKE_ARGS="-DUSING_QT_UI=ON -DCMAKE_PREFIX_PATH=$(brew --prefix qt5) ${CMAKE_ARGS}"
+			;;
 		--ios) CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=cmake/Toolchains/ios.cmake ${CMAKE_ARGS}"
 			TARGET_OS=iOS
 			;;
+		--ios-xcode) CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=cmake/Toolchains/ios.cmake -DIOS_PLATFORM=OS -GXcode ${CMAKE_ARGS}"
+			TARGET_OS=iOS-xcode
+			;;
+		--rpi-armv6)
+			CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=cmake/Toolchains/raspberry.armv6.cmake ${CMAKE_ARGS}"
+			;;
+		--rpi)
+			CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=cmake/Toolchains/raspberry.armv7.cmake ${CMAKE_ARGS}"
+			;;
+                --rpi64)
+                        CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=cmake/Toolchains/raspberry.armv8.cmake ${CMAKE_ARGS}"
+                        ;;
 		--android) CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=android/android.toolchain.cmake ${CMAKE_ARGS}"
 			TARGET_OS=Android
 			PACKAGE=1
@@ -21,17 +37,18 @@ do
 			;;
 		--release)
 			CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release ${CMAKE_ARGS}"
-			QMAKE_ARGS="CONFIG+=release ${QMAKE_ARGS}"
 			;;
 		--debug)
 			CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Debug ${CMAKE_ARGS}"
-			QMAKE_ARGS="CONFIG+=debug ${QMAKE_ARGS}"
-			;;
-		--system-ffmpeg)
-			QMAKE_ARGS="CONFIG+=system_ffmpeg ${QMAKE_ARGS}"
 			;;
 		--headless) echo "Headless mode enabled"
 			CMAKE_ARGS="-DHEADLESS=ON ${CMAKE_ARGS}"
+			;;
+		--libretro) echo "Build Libretro core"
+			CMAKE_ARGS="-DLIBRETRO=ON ${CMAKE_ARGS}"
+			;;
+		--libretro_android) echo "Build Libretro Android core"
+		        CMAKE_ARGS="-DLIBRETRO=ON -DCMAKE_TOOLCHAIN_FILE=${NDK}/build/cmake/android.toolchain.cmake -DANDROID_ABI=${APP_ABI} ${CMAKE_ARGS}"
 			;;
 		--unittest) echo "Build unittest"
 			CMAKE_ARGS="-DUNITTEST=ON ${CMAKE_ARGS}"
@@ -39,8 +56,12 @@ do
 		--no-package) echo "Packaging disabled"
 			PACKAGE=0
 			;;
-		--*) echo "Bad option: $1"
-			exit 1
+		--clang) echo "Clang enabled"
+			export CC=/usr/bin/clang
+			export CXX=/usr/bin/clang++
+			;;
+		--sanitize) echo "Enabling address-sanitizer if available"
+			CMAKE_ARGS="-DUSE_ASAN=ON ${CMAKE_ARGS}"
 			;;
 		*) MAKE_OPT="$1 ${MAKE_OPT}"
 			;;

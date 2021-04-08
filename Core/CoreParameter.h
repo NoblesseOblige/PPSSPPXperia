@@ -23,12 +23,17 @@
 #include "Core/Config.h"
 
 enum GPUCore {
-	GPUCORE_NULL,
 	GPUCORE_GLES,
 	GPUCORE_SOFTWARE,
 	GPUCORE_DIRECTX9,
 	GPUCORE_DIRECTX11,
 	GPUCORE_VULKAN,
+};
+
+enum class FPSLimit {
+	NORMAL = 0,
+	CUSTOM1 = 1,
+	CUSTOM2 = 2,
 };
 
 class FileLoader;
@@ -38,15 +43,16 @@ namespace Draw {
 	class DrawContext;
 }
 
+enum class CPUCore;
+
 // PSP_CoreParameter()
 struct CoreParameter {
-	CoreParameter() : thin3d(nullptr), collectEmuLog(0), unthrottle(false), fpsLimit(0), updateRecent(true), freezeNext(false), frozen(false), mountIsoLoader(nullptr) {}
+	CoreParameter() {}
 
 	CPUCore cpuCore;
 	GPUCore gpuCore;
 
-	GraphicsContext *graphicsContext;  // TODO: Find a better place.
-	Draw::DrawContext *thin3d;
+	GraphicsContext *graphicsContext = nullptr;  // TODO: Find a better place.
 	bool enableSound;  // there aren't multiple sound cores.
 
 	std::string fileToStart;
@@ -54,30 +60,31 @@ struct CoreParameter {
 	std::string mountRoot;  // If non-empty, and fileToStart is an ELF or PBP, mount this as host0: / umd0:.
 	std::string errorString;
 
-	bool startPaused;
+	bool startBreak;
 	bool printfEmuLog;  // writes "emulator:" logging to stdout
-	std::string *collectEmuLog;
+	std::string *collectEmuLog = nullptr;
 	bool headLess;   // Try to avoid messageboxes etc
 
-	// Internal PSP resolution
+	// Internal PSP rendering resolution and scale factor.
+	int renderScaleFactor;
 	int renderWidth;
 	int renderHeight;
 
-	// Actual pixel output resolution (for use by glViewport and the like)
+	// Actual output resolution in pixels.
 	int pixelWidth;
 	int pixelHeight;
 
 	// Can be modified at runtime.
-	bool unthrottle;
-	int fpsLimit;
+	bool unthrottle = false;
+	FPSLimit fpsLimit = FPSLimit::NORMAL;
 
-	bool updateRecent;
+	bool updateRecent = true;
 
 	// Freeze-frame. For nvidia perfhud profiling. Developers only.
-	bool freezeNext;
-	bool frozen;
+	bool freezeNext = false;
+	bool frozen = false;
 
-	FileLoader *mountIsoLoader;
+	FileLoader *mountIsoLoader = nullptr;
 
 	Compatibility compat;
 };

@@ -21,60 +21,21 @@
 #include <map>
 #include <vector>
 
-#include "CommonTypes.h"
+#include "ppsspp_config.h"
+#include "Common/CommonTypes.h"
+#include "Core/ConfigValues.h"
 
 extern const char *PPSSPP_GIT_VERSION;
 
-const int PSP_MODEL_FAT = 0;
-const int PSP_MODEL_SLIM = 1;
-const int PSP_DEFAULT_FIRMWARE = 150;
-static const s8 VOLUME_OFF = 0;
-static const s8 VOLUME_MAX = 10;
-
-enum CPUCore {
-	CPU_CORE_INTERPRETER = 0,
-	CPU_CORE_JIT = 1,
-	CPU_CORE_IRJIT = 2,
-};
-
-enum {
-	ROTATION_AUTO = 0,
-	ROTATION_LOCKED_HORIZONTAL = 1,
-	ROTATION_LOCKED_VERTICAL = 2,
-	ROTATION_LOCKED_HORIZONTAL180 = 3,
-	ROTATION_LOCKED_VERTICAL180 = 4,
-};
-
-enum BufferFilter {
-	SCALE_LINEAR = 1,
-	SCALE_NEAREST = 2,
-};
-
-// Software is not among these because it will have one of these perform the blit to display.
-enum class GPUBackend {
-	OPENGL = 0,
-	DIRECT3D9 = 1,
-	DIRECT3D11 = 2,
-	VULKAN = 3,
-};
-enum {
-	GPU_BACKEND_OPENGL = (int)GPUBackend::OPENGL,
-	GPU_BACKEND_DIRECT3D9 = (int)GPUBackend::DIRECT3D9,
-	GPU_BACKEND_DIRECT3D11 = (int)GPUBackend::DIRECT3D11,
-	GPU_BACKEND_VULKAN = (int)GPUBackend::VULKAN,
-};
-
-enum AudioBackendType {
-	AUDIO_BACKEND_AUTO,
-	AUDIO_BACKEND_DSOUND,
-	AUDIO_BACKEND_WASAPI,
-};
-
-// For iIOTimingMethod.
-enum IOTimingMethods {
-	IOTIMING_FAST = 0,
-	IOTIMING_HOST = 1,
-	IOTIMING_REALISTIC = 2,
+enum ChatPositions {
+	BOTTOM_LEFT = 0,
+	BOTTOM_CENTER = 1,
+	BOTOM_RIGHT = 2,
+	TOP_LEFT = 3,
+	TOP_CENTER = 4,
+	TOP_RIGHT = 5,
+	CENTER_LEFT = 6,
+	CENTER_RIGHT = 7,
 };
 
 namespace http {
@@ -84,6 +45,14 @@ namespace http {
 
 struct UrlEncoder;
 
+struct ConfigTouchPos {
+	float x;
+	float y;
+	float scale;
+	// Note: Show is not used for all settings.
+	bool show;
+};
+
 struct Config {
 public:
 	Config();
@@ -92,7 +61,8 @@ public:
 	// Whether to save the config on close.
 	bool bSaveSettings;
 	bool bFirstRun;
-	bool bGameSpecific;
+	bool bGameSpecific = false;
+	bool bUpdatedInstanceCounter = false;
 
 	int iRunCount; // To be used to for example check for updates every 10 runs and things like that.
 
@@ -104,36 +74,41 @@ public:
 	bool bScreenshotsAsPNG;
 	bool bUseFFV1;
 	bool bDumpFrames;
+	bool bDumpVideoOutput;
 	bool bDumpAudio;
+	bool bSaveLoadResetsAVdumping;
 	bool bEnableLogging;
 	bool bDumpDecryptedEboot;
 	bool bFullscreenOnDoubleclick;
-#if defined(USING_WIN_UI)
+
+	// These four are Win UI only
 	bool bPauseOnLostFocus;
 	bool bTopMost;
-	std::string sFont;
 	bool bIgnoreWindowsKey;
-
 	bool bRestartRequired;
-#endif
+
+	std::string sFont;
 
 	bool bPauseWhenMinimized;
 
-#if !defined(MOBILE_DEVICE)
+	// Not used on mobile devices.
 	bool bPauseExitsEmulator;
-#endif
-	bool bPS3Controller;
+
+	bool bPauseMenuExitsEmulator;
 
 	// Core
 	bool bIgnoreBadMemAccess;
+
 	bool bFastMemory;
 	int iCpuCore;
 	bool bCheckForNewVersion;
 	bool bForceLagSync;
 	bool bFuncReplacements;
+	bool bHideSlowWarnings;
+	bool bHideStateWarnings;
+	bool bPreloadFunctions;
+	uint32_t uJitDisableFlags;
 
-	// Definitely cannot be changed while game is running.
-	bool bSeparateCPUThread;
 	bool bSeparateSASThread;
 	bool bSeparateIOThread;
 	int iIOTimingMethod;
@@ -141,7 +116,15 @@ public:
 	bool bAutoSaveSymbolMap;
 	bool bCacheFullIsoInRam;
 	int iRemoteISOPort;
+	std::string sLastRemoteISOServer;
+	int iLastRemoteISOPort;
+	bool bRemoteISOManual;
+	bool bRemoteShareOnStartup;
+	std::string sRemoteISOSubdir;
+	bool bRemoteDebuggerOnStartup;
 	bool bMemStickInserted;
+	int iMemStickSizeGB;
+	bool bLoadPlugins;
 
 	int iScreenRotation;  // The rotation angle of the PPSSPP UI. Only supported on Android and possibly other mobile platforms.
 	int iInternalScreenRotation;  // The internal screen rotation angle. Useful for vertical SHMUPs and similar.
@@ -151,13 +134,25 @@ public:
 	std::vector<std::string> vPinnedPaths;
 	std::string sLanguageIni;
 
+	bool bDiscordPresence;  // Enables setting the Discord presence to the current game (or menu)
+
 	// GFX
 	int iGPUBackend;
+	std::string sFailedGPUBackends;
+	std::string sDisabledGPUBackends;
+	// We have separate device parameters for each backend so it doesn't get erased if you switch backends.
+	// If not set, will use the "best" device.
+	std::string sVulkanDevice;
+	std::string sD3D11Device;  // Windows only
+	std::string sCameraDevice;
+	std::string sMicDevice;
+
 	bool bSoftwareRendering;
 	bool bHardwareTransform; // only used in the GLES backend
 	bool bSoftwareSkinning;  // may speed up some games
+	bool bVendorBugChecksEnabled;
 
-	int iRenderingMode; // 0 = non-buffered rendering 1 = buffered rendering 2 = Read Framebuffer to memory (CPU) 3 = Read Framebuffer to memory (GPU)
+	int iRenderingMode; // 0 = non-buffered rendering 1 = buffered rendering
 	int iTexFiltering; // 1 = off , 2 = nearest , 3 = linear , 4 = linear(CG)
 	int iBufFilter; // 1 = linear, 2 = nearest
 	int iSmallDisplayZoomType;  // Used to fit display into screen 0 = stretch, 1 = partial stretch, 2 = auto scaling, 3 = manual scaling.
@@ -165,12 +160,15 @@ public:
 	float fSmallDisplayOffsetY;
 	float fSmallDisplayZoomLevel; //This is used for zoom values, both in and out.
 	bool bImmersiveMode;  // Mode on Android Kitkat 4.4 that hides the back button etc.
+	bool bSustainedPerformanceMode;  // Android: Slows clocks down to avoid overheating/speed fluctuations.
+	bool bIgnoreScreenInsets;  // Android: Center screen disregarding insets if this is enabled.
 	bool bVSync;
 	int iFrameSkip;
+	int iFrameSkipType;
+	int iUnthrottleMode; // See UnthrottleMode in ConfigValues.h.
 	bool bAutoFrameSkip;
-	bool bFrameSkipUnthrottle;
 
-	bool bEnableCardboard; // Cardboard Master Switch
+	bool bEnableCardboardVR; // Cardboard Master Switch
 	int iCardboardScreenSize; // Screen Size (in %)
 	int iCardboardXShift; // X-Shift of Screen (in %)
 	int iCardboardYShift; // Y-Shift of Screen (in %)
@@ -185,53 +183,98 @@ public:
 	bool bTextureSecondaryCache;
 	bool bVertexDecoderJit;
 	bool bFullScreen;
+	bool bFullScreenMulti;
 	int iInternalResolution;  // 0 = Auto (native), 1 = 1x (480x272), 2 = 2x, 3 = 3x, 4 = 4x and so on.
 	int iAnisotropyLevel;  // 0 - 5, powers of 2: 0 = 1x = no aniso
 	int bHighQualityDepth;
-	bool bTrueColor;
-	bool bMipMap;
 	bool bReplaceTextures;
 	bool bSaveNewTextures;
-	int iTexScalingLevel; // 1 = off, 2 = 2x, ..., 5 = 5x
+	bool bIgnoreTextureFilenames;
+	int iTexScalingLevel; // 0 = auto, 1 = off, 2 = 2x, ..., 5 = 5x
 	int iTexScalingType; // 0 = xBRZ, 1 = Hybrid
 	bool bTexDeposterize;
-	int iFpsLimit;
-	int iForceMaxEmulatedFPS;
+	bool bTexHardwareScaling;
+	int iFpsLimit1;
+	int iFpsLimit2;
 	int iMaxRecent;
 	int iCurrentStateSlot;
 	int iRewindFlipFrequency;
-	bool bEnableAutoLoad;
+	bool bUISound;
+	bool bEnableStateUndo;
+	int iAutoLoadSaveState; // 0 = off, 1 = oldest, 2 = newest, >2 = slot number + 3
 	bool bEnableCheats;
 	bool bReloadCheats;
 	int iCwCheatRefreshRate;
-	bool bDisableStencilTest;
-	bool bAlwaysDepthWrite;
+	float fCwCheatScrollPosition;
+	float fGameListScrollPosition;
 	int iBloomHack; //0 = off, 1 = safe, 2 = balanced, 3 = aggressive
-	bool bTimerHack;
 	bool bBlockTransferGPU;
 	bool bDisableSlowFramebufEffects;
 	bool bFragmentTestCache;
 	int iSplineBezierQuality; // 0 = low , 1 = Intermediate , 2 = High
-	std::string sPostShaderName;  // Off for off.
+	bool bHardwareTessellation;
+
+	std::vector<std::string> vPostShaderNames; // Off for chain end (only Off for no shader)
+	std::map<std::string, float> mPostShaderSetting;
+	bool bShaderChainRequires60FPS;
+	std::string sTextureShaderName;
 	bool bGfxDebugOutput;
+	bool bGfxDebugSplitSubmit;
+	int iInflightFrames;
+	bool bRenderDuplicateFrames;
 
 	// Sound
 	bool bEnableSound;
-	int iAudioLatency; // 0 = low , 1 = medium(default) , 2 = high
 	int iAudioBackend;
 	int iGlobalVolume;
+	int iAltSpeedVolume;
 	bool bExtraAudioBuffering;  // For bluetooth
-
-	// Audio Hack
-	bool bSoundSpeedHack;
+	std::string sAudioDevice;
+	bool bAutoAudioDevice;
 
 	// UI
 	bool bShowDebuggerOnLoad;
 	int iShowFPSCounter;
+	bool bShowRegionOnGameIcon;
+	bool bShowIDOnGameIcon;
+	float fGameGridScale;
+	bool bShowOnScreenMessages;
+	int iBackgroundAnimation;  // enum BackgroundAnimation
 
+	// TODO: Maybe move to a separate theme system.
+	uint32_t uItemStyleFg;
+	uint32_t uItemStyleBg;
+	uint32_t uItemFocusedStyleFg;
+	uint32_t uItemFocusedStyleBg;
+	uint32_t uItemDownStyleFg;
+	uint32_t uItemDownStyleBg;
+	uint32_t uItemDisabledStyleFg;
+	uint32_t uItemDisabledStyleBg;
+	uint32_t uItemHighlightedStyleFg;
+	uint32_t uItemHighlightedStyleBg;
+
+	uint32_t uButtonStyleFg;
+	uint32_t uButtonStyleBg;
+	uint32_t uButtonFocusedStyleFg;
+	uint32_t uButtonFocusedStyleBg;
+	uint32_t uButtonDownStyleFg;
+	uint32_t uButtonDownStyleBg;
+	uint32_t uButtonDisabledStyleFg;
+	uint32_t uButtonDisabledStyleBg;
+	uint32_t uButtonHighlightedStyleFg;
+	uint32_t uButtonHighlightedStyleBg;
+
+	uint32_t uHeaderStyleFg;
+	uint32_t uInfoStyleFg;
+	uint32_t uInfoStyleBg;
+	uint32_t uPopupTitleStyleFg;
+	uint32_t uPopupStyleFg;
+	uint32_t uPopupStyleBg;
+
+	bool bLogFrameDrops;
 	bool bShowDebugStats;
 	bool bShowAudioDebug;
-	bool bAudioResampler;
+	bool bShowGpuProfile;
 
 	//Analog stick tilting
 	//the base x and y tilt. this inclination is treated as (0,0) and the tilt input
@@ -245,6 +288,8 @@ public:
 	int iTiltSensitivityY;
 	//the deadzone radius of the tilt
 	float fDeadzoneRadius;
+	// deadzone skip
+	float fTiltDeadzoneSkip;
 	//type of tilt input currently selected: Defined in TiltEventProcessor.h
 	//0 - no tilt, 1 - analog stick, 2 - D-Pad, 3 - Action Buttons (Tri, Cross, Square, Circle)
 	int iTiltInputType;
@@ -256,6 +301,14 @@ public:
 	//Combo key screen flag
 	int iComboMode;
 
+	// Right analog binding
+	int iRightAnalogUp;
+	int iRightAnalogDown;
+	int iRightAnalogLeft;
+	int iRightAnalogRight;
+	int iRightAnalogPress;
+	bool bRightAnalogCustom;
+
 	// Disable diagonals
 	bool bDisableDpadDiagonals;
 	bool bGamepadOnlyFocused;
@@ -263,51 +316,43 @@ public:
 	int iTouchButtonStyle;
 	int iTouchButtonOpacity;
 	int iTouchButtonHideSeconds;
+	// Auto rotation speed
+	float fAnalogAutoRotSpeed;
+
+	// Snap touch control position
+	bool bTouchSnapToGrid;
+	int iTouchSnapGridSize;
+
 	// Floating analog stick (recenters on thumb on press).
 	bool bAutoCenterTouchAnalog;
 
 	//space between PSP buttons
 	//the PSP button's center (triangle, circle, square, cross)
-	float fActionButtonCenterX, fActionButtonCenterY;
-	float fActionButtonScale;
+	ConfigTouchPos touchActionButtonCenter;
 	float fActionButtonSpacing;
 	//radius of the D-pad (PSP cross)
 	// int iDpadRadius;
 	//the D-pad (PSP cross) position
-	float fDpadX, fDpadY;
-	float fDpadScale;
+	ConfigTouchPos touchDpad;
 	float fDpadSpacing;
-	//the start key position
-	float fStartKeyX, fStartKeyY;
-	float fStartKeyScale;
-	//the select key position;
-	float fSelectKeyX, fSelectKeyY;
-	float fSelectKeyScale;
+	ConfigTouchPos touchStartKey;
+	ConfigTouchPos touchSelectKey;
+	ConfigTouchPos touchUnthrottleKey;
+	ConfigTouchPos touchLKey;
+	ConfigTouchPos touchRKey;
+	ConfigTouchPos touchAnalogStick;
+	ConfigTouchPos touchRightAnalogStick;
 
-	float fUnthrottleKeyX, fUnthrottleKeyY;
-	float fUnthrottleKeyScale;
-
-	float fLKeyX, fLKeyY;
-	float fLKeyScale;
-
-	float fRKeyX, fRKeyY;
-	float fRKeyScale;
-
-	//position of the analog stick
-	float fAnalogStickX, fAnalogStickY;
-	float fAnalogStickScale;
-
-	//the Combo Button position
-	float fcombo0X, fcombo0Y;
-	float fcomboScale0;
-	float fcombo1X, fcombo1Y;
-	float fcomboScale1;
-	float fcombo2X, fcombo2Y;
-	float fcomboScale2;
-	float fcombo3X, fcombo3Y;
-	float fcomboScale3;
-	float fcombo4X, fcombo4Y;
-	float fcomboScale4;
+	ConfigTouchPos touchCombo0;
+	ConfigTouchPos touchCombo1;
+	ConfigTouchPos touchCombo2;
+	ConfigTouchPos touchCombo3;
+	ConfigTouchPos touchCombo4;
+	ConfigTouchPos touchSpeed1Key;
+	ConfigTouchPos touchSpeed2Key;
+	ConfigTouchPos touchRapidFireKey;
+	ConfigTouchPos touchAnalogRotationCWKey;
+	ConfigTouchPos touchAnalogRotationCCWKey;
 
 	// Controls Visibility
 	bool bShowTouchControls;
@@ -317,23 +362,6 @@ public:
 	bool bShowTouchTriangle;
 	bool bShowTouchSquare;
 
-	bool bShowTouchStart;
-	bool bShowTouchSelect;
-	bool bShowTouchUnthrottle;
-
-	bool bShowTouchLTrigger;
-	bool bShowTouchRTrigger;
-
-	bool bShowTouchAnalogStick;
-	bool bShowTouchDpad;
-
-	//Combo Button Visibility
-	bool bShowComboKey0;
-	bool bShowComboKey1;
-	bool bShowComboKey2;
-	bool bShowComboKey3;
-	bool bShowComboKey4;
-
 	// Combo_key mapping. These are bitfields.
 	int iCombokey0;
 	int iCombokey1;
@@ -341,9 +369,14 @@ public:
 	int iCombokey3;
 	int iCombokey4;
 
-#if !defined(IOS)
+	bool bComboToggle0;
+	bool bComboToggle1;
+	bool bComboToggle2;
+	bool bComboToggle3;
+	bool bComboToggle4;
+
+	// Ignored on iOS and other platforms that lack pause.
 	bool bShowTouchPause;
-#endif
 
 	bool bHapticFeedback;
 
@@ -352,16 +385,21 @@ public:
 	float fDInputAnalogInverseDeadzone;
 	float fDInputAnalogSensitivity;
 
+	// We also use the XInput settings as analog settings on other platforms like Android.
 	float fXInputAnalogDeadzone;
 	int iXInputAnalogInverseMode;
 	float fXInputAnalogInverseDeadzone;
 	float fXInputAnalogSensitivity;
 
 	float fAnalogLimiterDeadzone;
-	// GLES backend-specific hacks. Not saved to the ini file, do not add checkboxes. Will be made into
-	// proper options when good enough.
-	bool bDisableAlphaTest;  // Helps PowerVR performance immensely, breaks some graphics
-	// End GLES hacks.
+
+	bool bMouseControl;
+	bool bMapMouse; // Workaround for mapping screen:|
+	bool bMouseConfine; // Trap inside the window.
+	float fMouseSensitivity;
+	float fMouseSmoothing;
+
+	bool bSystemControls;
 
 	// Use the hardware scaler to scale up the image to save fillrate. Similar to Windows' window size, really.
 	int iAndroidHwScale;  // 0 = device resolution. 1 = 480x272 (extended to correct aspect), 2 = 960x544 etc.
@@ -371,9 +409,7 @@ public:
 
 	// SystemParam
 	std::string sNickName;
-	std::string proAdhocServer;
 	std::string sMACAddress;
-	int iPortOffset;
 	int iLanguage;
 	int iTimeFormat;
 	int iDateFormat;
@@ -382,19 +418,35 @@ public:
 	int iButtonPreference;
 	int iLockParentalLevel;
 	bool bEncryptSave;
+	bool bSavedataUpgrade;
 
 	// Networking
+	std::string proAdhocServer;
 	bool bEnableWlan;
 	bool bEnableAdhocServer;
+	bool bTCPNoDelay;
+	bool bEnableUPnP;
+	bool bUPnPUseOriginalPort;
+	bool bForcedFirstConnect;
+	int iPortOffset;
+	int iMinTimeout;
 	int iWlanAdhocChannel;
 	bool bWlanPowerSave;
+	bool bEnableNetworkChat;
+	//for chat position , moveable buttons is better than this 
+	int iChatButtonPosition;
+	int iChatScreenPosition;
+
+	bool bEnableQuickChat;
+	std::string sQuickChat0;
+	std::string sQuickChat1;
+	std::string sQuickChat2;
+	std::string sQuickChat3;
+	std::string sQuickChat4;
 
 	int iPSPModel;
 	int iFirmwareVersion;
-	// TODO: Make this work with your platform, too!
-#if defined(USING_WIN_UI)
 	bool bBypassOSKWithKeyboard;
-#endif
 
 	// Debugger
 	int iDisasmWindowX;
@@ -412,13 +464,17 @@ public:
 	bool bDisplayStatusBar;
 	bool bShowBottomTabTitles;
 	bool bShowDeveloperMenu;
+	bool bShowAllocatorDebug;
 	// Double edged sword: much easier debugging, but not accurate.
 	bool bSkipDeadbeefFilling;
 	bool bFuncHashMap;
+	bool bDebugMemInfoDetailed;
+	bool bDrawFrameGraph;
 
 	// Volatile development settings
 	bool bShowFrameProfiler;
 
+	// Various directories. Autoconfigured, not read from ini.
 	std::string currentDirectory;
 	std::string externalDirectory;
 	std::string memStickDirectory;
@@ -432,15 +488,16 @@ public:
 	std::string dismissedVersion;
 
 	void Load(const char *iniFileName = nullptr, const char *controllerIniFilename = nullptr);
-	void Save();
+	void Save(const char *saveReason);
+	void Reload();
 	void RestoreDefaults();
 
 	//per game config managment, should maybe be in it's own class
-	void changeGameSpecific(const std::string &gameId = "");
+	void changeGameSpecific(const std::string &gameId = "", const std::string &title = "");
 	bool createGameConfig(const std::string &game_id);
 	bool deleteGameConfig(const std::string& pGameId);
-	bool loadGameConfig(const std::string &game_id);
-	bool saveGameConfig(const std::string &pGameId);
+	bool loadGameConfig(const std::string &game_id, const std::string &title);
+	bool saveGameConfig(const std::string &pGameId, const std::string &title);
 	void unloadGameConfig();
 	std::string getGameConfigFile(const std::string &gameId);
 	bool hasGameConfig(const std::string &game_id);
@@ -453,6 +510,7 @@ public:
 
 	// Utility functions for "recent" management
 	void AddRecent(const std::string &file);
+	void RemoveRecent(const std::string &file);
 	void CleanRecent();
 
 	static void DownloadCompletedCallback(http::Download &download);
@@ -462,15 +520,17 @@ public:
 
 	void GetReportingInfo(UrlEncoder &data);
 
-	bool IsPortrait() const {
-		return (iInternalScreenRotation == ROTATION_LOCKED_VERTICAL || iInternalScreenRotation == ROTATION_LOCKED_VERTICAL180) && iRenderingMode != 0;
-	}
+	bool IsPortrait() const;
+	int NextValidBackend();
+	bool IsBackendEnabled(GPUBackend backend, bool validate = true);
 
 protected:
 	void LoadStandardControllerIni();
 
 private:
+	bool reload_ = false;
 	std::string gameId_;
+	std::string gameIdTitle_;
 	std::string iniFilename_;
 	std::string controllerIniFilename_;
 	std::vector<std::string> searchPath_;
@@ -479,7 +539,7 @@ private:
 };
 
 std::map<std::string, std::pair<std::string, int>> GetLangValuesMapping();
-const char *CreateRandMAC();
+std::string CreateRandMAC();
 
 // TODO: Find a better place for this.
 extern http::Downloader g_DownloadManager;

@@ -20,62 +20,59 @@
 
 #include "Common/CommonTypes.h"
 #include "Common/Log.h"
+#include "Common/StringUtils.h"
+#include "Common/Swap.h"
 #include "Core/ELF/ParamSFO.h"
+#include "Core/Core.h"
 
 struct Header
 {
-	u32 magic; /* Always PSF */
-	u32 version; /* Usually 1.1 */
-	u32 key_table_start; /* Start position of key_table */
-	u32 data_table_start; /* Start position of data_table */
-	u32 index_table_entries; /* Number of entries in index_table*/
+	u32_le magic; /* Always PSF */
+	u32_le version; /* Usually 1.1 */
+	u32_le key_table_start; /* Start position of key_table */
+	u32_le data_table_start; /* Start position of data_table */
+	u32_le index_table_entries; /* Number of entries in index_table*/
 };
 
 struct IndexTable
 {
-	u16 key_table_offset; /* Offset of the param_key from start of key_table */
-	u16 param_fmt; /* Type of data of param_data in the data_table */
-	u32 param_len; /* Used Bytes by param_data in the data_table */
-	u32 param_max_len; /* Total bytes reserved for param_data in the data_table */
-	u32 data_table_offset; /* Offset of the param_data from start of data_table */
+	u16_le key_table_offset; /* Offset of the param_key from start of key_table */
+	u16_le param_fmt; /* Type of data of param_data in the data_table */
+	u32_le param_len; /* Used Bytes by param_data in the data_table */
+	u32_le param_max_len; /* Total bytes reserved for param_data in the data_table */
+	u32_le data_table_offset; /* Offset of the param_data from start of data_table */
 };
 
-void ParamSFOData::SetValue(std::string key, unsigned int value, int max_size)
-{
+void ParamSFOData::SetValue(std::string key, unsigned int value, int max_size) {
 	values[key].type = VT_INT;
 	values[key].i_value = value;
 	values[key].max_size = max_size;
 }
-void ParamSFOData::SetValue(std::string key, std::string value, int max_size)
-{
+void ParamSFOData::SetValue(std::string key, std::string value, int max_size) {
 	values[key].type = VT_UTF8;
 	values[key].s_value = value;
 	values[key].max_size = max_size;
 }
 
-void ParamSFOData::SetValue(std::string key, const u8* value, unsigned int size, int max_size)
-{
+void ParamSFOData::SetValue(std::string key, const u8* value, unsigned int size, int max_size) {
 	values[key].type = VT_UTF8_SPE;
 	values[key].SetData(value,size);
 	values[key].max_size = max_size;
 }
 
-int ParamSFOData::GetValueInt(std::string key)
-{
+int ParamSFOData::GetValueInt(std::string key) {
 	std::map<std::string,ValueData>::iterator it = values.find(key);
 	if(it == values.end() || it->second.type != VT_INT)
 		return 0;
 	return it->second.i_value;
 }
-std::string ParamSFOData::GetValueString(std::string key)
-{
+std::string ParamSFOData::GetValueString(std::string key) {
 	std::map<std::string,ValueData>::iterator it = values.find(key);
 	if(it == values.end() || (it->second.type != VT_UTF8))
 		return "";
 	return it->second.s_value;
 }
-u8* ParamSFOData::GetValueData(std::string key, unsigned int *size)
-{
+u8* ParamSFOData::GetValueData(std::string key, unsigned int *size) {
 	std::map<std::string,ValueData>::iterator it = values.find(key);
 	if(it == values.end() || (it->second.type != VT_UTF8_SPE))
 		return 0;
@@ -95,8 +92,7 @@ std::vector<std::string> ParamSFOData::GetKeys() {
 }
 
 // I'm so sorry Ced but this is highly endian unsafe :(
-bool ParamSFOData::ReadSFO(const u8 *paramsfo, size_t size)
-{
+bool ParamSFOData::ReadSFO(const u8 *paramsfo, size_t size) {
 	if (size < sizeof(Header))
 		return false;
 	const Header *header = (const Header *)paramsfo;
@@ -118,7 +114,7 @@ bool ParamSFOData::ReadSFO(const u8 *paramsfo, size_t size)
 		case 0x0404:
 			{
 				// Unsigned int
-				const u32 *data = (const u32 *)(data_start + indexTables[i].data_table_offset);
+				const u32_le *data = (const u32_le *)(data_start + indexTables[i].data_table_offset);
 				SetValue(key,*data,indexTables[i].param_max_len);
 				VERBOSE_LOG(LOADER, "%s %08x", key, *data);
 			}
@@ -145,8 +141,7 @@ bool ParamSFOData::ReadSFO(const u8 *paramsfo, size_t size)
 	return true;
 }
 
-int ParamSFOData::GetDataOffset(const u8 *paramsfo, std::string dataName)
-{
+int ParamSFOData::GetDataOffset(const u8 *paramsfo, std::string dataName) {
 	const Header *header = (const Header *)paramsfo;
 	if (header->magic != 0x46535000)
 		return -1;
@@ -161,7 +156,7 @@ int ParamSFOData::GetDataOffset(const u8 *paramsfo, std::string dataName)
 	for (u32 i = 0; i < header->index_table_entries; i++)
 	{
 		const char *key = (const char *)(key_start + indexTables[i].key_table_offset);
-		if(std::string(key) == dataName)
+		if (!strcmp(key, dataName.c_str()))
 		{
 			return data_start + indexTables[i].data_table_offset;
 		}
@@ -170,8 +165,7 @@ int ParamSFOData::GetDataOffset(const u8 *paramsfo, std::string dataName)
 	return -1;
 }
 
-bool ParamSFOData::WriteSFO(u8 **paramsfo, size_t *size)
-{
+bool ParamSFOData::WriteSFO(u8 **paramsfo, size_t *size) {
 	size_t total_size = 0;
 	size_t key_size = 0;
 	size_t data_size = 0;
@@ -225,7 +219,7 @@ bool ParamSFOData::WriteSFO(u8 **paramsfo, size_t *size)
 			index_ptr->param_fmt = 0x0404;
 			index_ptr->param_len = 4;
 
-			*(int*)data_ptr = it->second.i_value;
+			*(s32_le *)data_ptr = it->second.i_value;
 		}
 		else if (it->second.type == VT_UTF8_SPE)
 		{
@@ -256,13 +250,11 @@ bool ParamSFOData::WriteSFO(u8 **paramsfo, size_t *size)
 	return true;
 }
 
-void ParamSFOData::Clear()
-{
+void ParamSFOData::Clear() {
 	values.clear();
 }
 
-void ParamSFOData::ValueData::SetData(const u8* data, int size)
-{
+void ParamSFOData::ValueData::SetData(const u8* data, int size) {
 	if(u_value)
 	{
 		delete[] u_value;
@@ -276,3 +268,27 @@ void ParamSFOData::ValueData::SetData(const u8* data, int size)
 	u_size = size;
 }
 
+std::string ParamSFOData::GenerateFakeID(std::string filename) {
+	// Generates fake gameID for homebrew based on it's folder name.
+	// Should probably not be a part of ParamSFO, but it'll be called in same places.
+	std::string file = PSP_CoreParameter().fileToStart;
+	if (filename != "")
+		file = filename;
+
+	std::size_t lslash = file.find_last_of("/");
+	file = file.substr(lslash + 1);
+
+	int sumOfAllLetters = 0;
+	for (char &c : file) {
+		sumOfAllLetters += c;
+		c = toupper(c);
+	}
+
+	if (file.size() < 4) {
+		file += "HOME";
+	}
+	file = file.substr(0, 4);
+
+	std::string fakeID = file + StringFromFormat("%05d", sumOfAllLetters);
+	return fakeID;
+}

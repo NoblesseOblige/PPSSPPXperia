@@ -30,8 +30,8 @@
 
 #include <cmath>
 
-#include "base/logging.h"
-#include "math/math_util.h"
+#include "Common/Data/Convert/SmallDataConvert.h"
+#include "Common/Math/math_util.h"
 
 #include "Common/CPUDetect.h"
 #include "Core/MemMap.h"
@@ -53,10 +53,9 @@
 // Currently known non working ones should have DISABLE.
 
 // #define CONDITIONAL_DISABLE { fpr.ReleaseSpillLocksAndDiscardTemps(); Comp_Generic(op); return; }
-#define CONDITIONAL_DISABLE ;
+#define CONDITIONAL_DISABLE(flag) if (jo.Disabled(JitDisable::flag)) { Comp_Generic(op); return; }
 #define DISABLE { fpr.ReleaseSpillLocksAndDiscardTemps(); Comp_Generic(op); return; }
-#define DISABLE_UNKNOWN_PREFIX { WLOG("DISABLE: Unknown Prefix in %s", __FUNCTION__); fpr.ReleaseSpillLocksAndDiscardTemps(); Comp_Generic(op); return; }
-
+#define DISABLE_UNKNOWN_PREFIX { WARN_LOG(JIT, "DISABLE: Unknown Prefix in %s", __FUNCTION__); fpr.ReleaseSpillLocksAndDiscardTemps(); Comp_Generic(op); return; }
 
 #define _RS MIPS_GET_RS(op)
 #define _RT MIPS_GET_RT(op)
@@ -82,7 +81,7 @@ static const float zero = 0.0f;
 
 
 void ArmJit::CompNEON_VecDo3(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_VEC);
 	if (js.HasUnknownPrefix()) {
 		DISABLE_UNKNOWN_PREFIX;
 	}
@@ -158,7 +157,8 @@ void ArmJit::CompNEON_VecDo3(MIPSOpcode op) {
 // #define CONDITIONAL_DISABLE { fpr.ReleaseSpillLocksAndDiscardTemps(); Comp_Generic(op); return; }
 
 void ArmJit::CompNEON_SV(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(LSU_VFPU);
+	CheckMemoryBreakpoint();
 	
 	// Remember to use single lane stores here and not VLDR/VSTR - switching usage
 	// between NEON and VFPU can be expensive on some chips.
@@ -275,7 +275,8 @@ inline int MIPS_GET_VQVT(u32 op) {
 }
 
 void ArmJit::CompNEON_SVQ(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(LSU_VFPU);
+	CheckMemoryBreakpoint();
 
 	int offset = (signed short)(op & 0xFFFC);
 	int vt = MIPS_GET_VQVT(op.encoding);
@@ -423,7 +424,7 @@ void ArmJit::CompNEON_SVQ(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_VVectorInit(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_XFER);
 	// WARNING: No prefix support!
 	if (js.HasUnknownPrefix()) {
 		DISABLE_UNKNOWN_PREFIX;
@@ -448,7 +449,7 @@ void ArmJit::CompNEON_VVectorInit(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_VDot(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_VEC);
 	if (js.HasUnknownPrefix()) {
 		DISABLE_UNKNOWN_PREFIX;
 	}
@@ -482,7 +483,7 @@ void ArmJit::CompNEON_VDot(MIPSOpcode op) {
 
 
 void ArmJit::CompNEON_VHdp(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_VEC);
 	if (js.HasUnknownPrefix()) {
 		DISABLE_UNKNOWN_PREFIX;
 	}
@@ -494,7 +495,7 @@ void ArmJit::CompNEON_VHdp(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_VScl(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_VEC);
 	if (js.HasUnknownPrefix()) {
 		DISABLE_UNKNOWN_PREFIX;
 	}
@@ -513,7 +514,7 @@ void ArmJit::CompNEON_VScl(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_VV2Op(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_VEC);
 	if (js.HasUnknownPrefix()) {
 		DISABLE_UNKNOWN_PREFIX;
 	}
@@ -664,7 +665,7 @@ void ArmJit::CompNEON_VV2Op(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Mftv(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_XFER);
 	int imm = op & 0xFF;
 	MIPSGPReg rt = _RT;
 	switch ((op >> 21) & 0x1f) {
@@ -716,8 +717,6 @@ void ArmJit::CompNEON_Mftv(MIPSOpcode op) {
 				gpr.MapReg(rt);
 				STR(gpr.R(rt), CTXREG, offsetof(MIPSState, vfpuCtrl) + 4 * (imm - 128));
 			}
-			//gpr.BindToRegister(rt, true, false);
-			//MOV(32, M(&currentMIPS->vfpuCtrl[imm - 128]), gpr.R(rt));
 
 			// TODO: Optimization if rt is Imm?
 			// Set these BEFORE disable!
@@ -730,7 +729,7 @@ void ArmJit::CompNEON_Mftv(MIPSOpcode op) {
 			}
 		} else {
 			//ERROR
-			_dbg_assert_msg_(CPU,0,"mtv - invalid register");
+			_dbg_assert_msg_(false,"mtv - invalid register");
 		}
 		break;
 
@@ -746,7 +745,7 @@ void ArmJit::CompNEON_Vmfvc(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Vmtvc(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_XFER);
 
 	int vs = _VS;
 	int imm = op & 0xFF;
@@ -767,7 +766,7 @@ void ArmJit::CompNEON_Vmtvc(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_VMatrixInit(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_XFER);
 
 	MatrixSize msz = GetMtxSize(op);
 	int n = GetMatrixSide(msz);
@@ -808,7 +807,7 @@ void ArmJit::CompNEON_VMatrixInit(MIPSOpcode op) {
 			// NEONTranspose4x4(cols);
 			break;
 		default:
-			_assert_msg_(JIT, 0, "Bad matrix size");
+			_assert_msg_(false, "Bad matrix size");
 			break;
 		}
 		break;
@@ -828,7 +827,7 @@ void ArmJit::CompNEON_VMatrixInit(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Vmmov(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_MTX_VMMOV);
 	if (_VS == _VD) {
 		// A lot of these no-op matrix moves in Wipeout... Just drop the instruction entirely.
 		return;
@@ -856,7 +855,7 @@ void ArmJit::CompNEON_Vmmov(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Vmmul(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_MTX_VMMUL);
 
 	MatrixSize msz = GetMtxSize(op);
 	int n = GetMatrixSide(msz);
@@ -864,7 +863,7 @@ void ArmJit::CompNEON_Vmmul(MIPSOpcode op) {
 	bool overlap = GetMatrixOverlap(_VD, _VS, msz) || GetMatrixOverlap(_VD, _VT, msz);
 	if (overlap) {
 		// Later. Fortunately, the VFPU also seems to prohibit overlap for matrix mul.
-		ILOG("Matrix overlap, ignoring.");
+		INFO_LOG(JIT, "Matrix overlap, ignoring.");
 		DISABLE;
 	}
 
@@ -895,11 +894,11 @@ void ArmJit::CompNEON_Vmmul(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Vmscl(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_MTX_VMSCL);
 
 	MatrixSize msz = GetMtxSize(op);
 
-	bool overlap = GetMatrixOverlap(_VD, _VS, msz);
+	bool overlap = GetMatrixOverlap(_VD, _VS, msz) != OVERLAP_NONE;
 	if (overlap) {
 		DISABLE;
 	}
@@ -920,7 +919,7 @@ void ArmJit::CompNEON_Vmscl(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Vtfm(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_MTX_VTFM);
 	if (js.HasUnknownPrefix()) {
 		DISABLE;
 	}
@@ -986,7 +985,7 @@ void ArmJit::CompNEON_Vf2i(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Vi2f(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_VEC);
 	if (js.HasUnknownPrefix()) {
 		DISABLE;
 	}
@@ -1012,6 +1011,7 @@ void ArmJit::CompNEON_Vi2f(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Vh2f(MIPSOpcode op) {
+	CONDITIONAL_DISABLE(VFPU_VEC);
 	if (!cpu_info.bHalf) {
 		// No hardware support for half-to-float, fallback to interpreter
 		// TODO: Translate the fast SSE solution to standard integer/VFP stuff
@@ -1045,7 +1045,7 @@ void ArmJit::CompNEON_Vh2f(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Vcst(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_XFER);
 	if (js.HasUnknownPrefix()) {
 		DISABLE_UNKNOWN_PREFIX;
 	}
@@ -1063,7 +1063,7 @@ void ArmJit::CompNEON_Vcst(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Vhoriz(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_VEC);
 	if (js.HasUnknownPrefix()) {
 		DISABLE_UNKNOWN_PREFIX;
 	}
@@ -1102,7 +1102,7 @@ void ArmJit::CompNEON_Vhoriz(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_VRot(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_VEC);
 
 	if (js.HasUnknownPrefix()) {
 		DISABLE_UNKNOWN_PREFIX;
@@ -1121,7 +1121,7 @@ void ArmJit::CompNEON_VRot(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_VIdt(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_XFER);
 	if (js.HasUnknownPrefix()) {
 		DISABLE_UNKNOWN_PREFIX;
 	}
@@ -1158,7 +1158,7 @@ void ArmJit::CompNEON_VIdt(MIPSOpcode op) {
 		}
 		break;
 	default:
-		_dbg_assert_msg_(CPU,0,"Bad vidt instruction");
+		_dbg_assert_msg_(false,"Bad vidt instruction");
 		break;
 	}
 
@@ -1167,7 +1167,7 @@ void ArmJit::CompNEON_VIdt(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Vcmp(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_COMP);
 	if (js.HasUnknownPrefix())
 		DISABLE;
 
@@ -1298,7 +1298,7 @@ void ArmJit::CompNEON_Vcmp(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Vcmov(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_COMP);
 	if (js.HasUnknownPrefix()) {
 		DISABLE;
 	}
@@ -1341,14 +1341,14 @@ void ArmJit::CompNEON_Vcmov(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Viim(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_XFER);
 	if (js.HasUnknownPrefix()) {
 		DISABLE;
 	}
 
 	DestARMReg vt = NEONMapPrefixD(_VT, V_Single, MAP_NOINIT | MAP_DIRTY);
 
-	s32 imm = (s32)(s16)(u16)(op & 0xFFFF);
+	s32 imm = SignExtend16ToS32(op);
 	// TODO: Optimize for low registers.
 	MOVI2F(S0, (float)imm, R0);
 	VMOV_neon(vt.rd, D0);
@@ -1358,7 +1358,7 @@ void ArmJit::CompNEON_Viim(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Vfim(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_XFER);
 	if (js.HasUnknownPrefix()) {
 		DISABLE;
 	}
@@ -1379,7 +1379,7 @@ void ArmJit::CompNEON_Vfim(MIPSOpcode op) {
 // https://code.google.com/p/bullet/source/browse/branches/PhysicsEffects/include/vecmath/neon/vectormath_neon_assembly_implementations.S?r=2488
 void ArmJit::CompNEON_VCrossQuat(MIPSOpcode op) {
 	// This op does not support prefixes anyway.
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_VEC);
 	if (js.HasUnknownPrefix()) {
 		DISABLE_UNKNOWN_PREFIX;
 	}
@@ -1427,17 +1427,26 @@ void ArmJit::CompNEON_Vsgn(MIPSOpcode op) {
 }
 
 void ArmJit::CompNEON_Vocp(MIPSOpcode op) {
-	CONDITIONAL_DISABLE;
+	CONDITIONAL_DISABLE(VFPU_VEC);
 	if (js.HasUnknownPrefix()) {
 		DISABLE;
 	}
+
+	// TODO: Handle T prefix.  Right now it uses 1.0f always.
+
+	// This is a hack that modifies prefixes.  We eat them later, so just overwrite.
+	// S prefix forces the negate flags.
+	js.prefixS |= 0x000F0000;
+	// T prefix forces constants on and regnum to 1.
+	// That means negate still works, and abs activates a different constant.
+	js.prefixT = (js.prefixT & ~0x000000FF) | 0x00000055 | 0x0000F000;
 
 	VectorSize sz = GetVecSize(op);
 	int n = GetNumVectorElements(sz);
 
 	MappedRegs regs = NEONMapDirtyIn(op, sz, sz);
 	MOVI2F_neon(Q0, 1.0f, R0);
-	VSUB(F_32, regs.vd, Q0, regs.vs);
+	VADD(F_32, regs.vd, Q0, regs.vs);
 	NEONApplyPrefixD(regs.vd);
 
 	fpr.ReleaseSpillLocksAndDiscardTemps();

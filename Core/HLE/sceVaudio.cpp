@@ -15,7 +15,8 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include "Common/ChunkFile.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
 #include "Core/Reporting.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
@@ -36,7 +37,7 @@ void __VaudioDoState(PointerWrap &p) {
 	if (!s)
 		return;
 
-	p.Do(vaudioReserved);
+	Do(p, vaudioReserved);
 }
 
 static u32 sceVaudioChReserve(int sampleCount, int freq, int format) {
@@ -56,7 +57,7 @@ static u32 sceVaudioChReserve(int sampleCount, int freq, int format) {
 	chans[PSP_AUDIO_CHANNEL_VAUDIO].leftVolume = 0;
 	chans[PSP_AUDIO_CHANNEL_VAUDIO].rightVolume = 0;
 	vaudioReserved = true;
-	__AudioSetOutputFrequency(freq);
+	__AudioSetSRCFrequency(freq);
 	return 0;
 }
 
@@ -74,10 +75,10 @@ static u32 sceVaudioChRelease() {
 
 static u32 sceVaudioOutputBlocking(int vol, u32 buffer) {
 	DEBUG_LOG(SCEAUDIO, "sceVaudioOutputBlocking(%i, %08x)", vol, buffer);
-	chans[PSP_AUDIO_CHANNEL_OUTPUT2].leftVolume = vol;
-	chans[PSP_AUDIO_CHANNEL_OUTPUT2].rightVolume = vol;
+	chans[PSP_AUDIO_CHANNEL_VAUDIO].leftVolume = vol;
+	chans[PSP_AUDIO_CHANNEL_VAUDIO].rightVolume = vol;
 	// TODO: This may be wrong, not sure if's in a different format?
-	chans[PSP_AUDIO_CHANNEL_OUTPUT2].sampleAddress = buffer;
+	chans[PSP_AUDIO_CHANNEL_VAUDIO].sampleAddress = buffer;
 	return __AudioEnqueue(chans[PSP_AUDIO_CHANNEL_VAUDIO], PSP_AUDIO_CHANNEL_VAUDIO, true);
 }
 

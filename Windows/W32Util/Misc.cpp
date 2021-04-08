@@ -1,4 +1,4 @@
-#include "stdafx.h"
+#include "ppsspp_config.h"
 #include "CommonWindows.h"
 
 #include <WinUser.h>
@@ -6,21 +6,14 @@
 #include <commctrl.h>
 
 #include "Misc.h"
-#include "util/text/utf8.h"
+#include "Common/Data/Encoding/Utf8.h"
 
-bool IsVistaOrHigher() {
-	OSVERSIONINFOEX osvi;
-	DWORDLONG dwlConditionMask = 0;
-	int op = VER_GREATER_EQUAL;
-	ZeroMemory(&osvi, sizeof(osvi));
-	osvi.dwOSVersionInfoSize = sizeof(osvi);
-	osvi.dwMajorVersion = 6;  // Vista is 6.0
-	osvi.dwMinorVersion = 0;
-
-	VER_SET_CONDITION(dwlConditionMask, VER_MAJORVERSION, op);
-	VER_SET_CONDITION(dwlConditionMask, VER_MINORVERSION, op);
-
-	return VerifyVersionInfo(&osvi, VER_MAJORVERSION | VER_MINORVERSION, dwlConditionMask) != FALSE;
+bool KeyDownAsync(int vkey) {
+#if PPSSPP_PLATFORM(UWP)
+	return 0;
+#else
+	return (GetAsyncKeyState(vkey) & 0x8000) != 0;
+#endif
 }
 
 namespace W32Util
@@ -62,7 +55,7 @@ namespace W32Util
  
 	void NiceSizeFormat(size_t size, char *out)
 	{
-		char *sizes[] = {"B","KB","MB","GB","TB","PB","EB"};
+		const char *sizes[] = {"B","KB","MB","GB","TB","PB","EB"};
 		int s = 0;
 		int frac = 0;
 		while (size>=1024)
@@ -137,21 +130,51 @@ namespace W32Util
 		return cmdline;
 	}
 
-	void ExitAndRestart() {
-		// This preserves arguments (for example, config file) and working directory.
+	void GetSelfExecuteParams(std::wstring &workingDirectory, std::wstring &moduleFilename) {
+		workingDirectory.resize(MAX_PATH);
+		size_t sz = GetCurrentDirectoryW((DWORD)workingDirectory.size(), &workingDirectory[0]);
+		if (sz != 0 && sz < workingDirectory.size()) {
+			// This means success, so now we can remove the null terminator.
+			workingDirectory.resize(sz);
+		} else if (sz > workingDirectory.size()) {
+			// If insufficient, sz will include the null terminator, so we remove after.
+			workingDirectory.resize(sz);
+			sz = GetCurrentDirectoryW((DWORD)sz, &workingDirectory[0]);
+			workingDirectory.resize(sz);
+		}
 
-		wchar_t moduleFilename[MAX_PATH];
-		wchar_t workingDirectory[MAX_PATH];
-		GetCurrentDirectoryW(MAX_PATH, workingDirectory);
-		const wchar_t *cmdline = RemoveExecutableFromCommandLine(GetCommandLineW());
-		GetModuleFileName(GetModuleHandle(NULL), moduleFilename, MAX_PATH);
-		ShellExecute(NULL, NULL, moduleFilename, cmdline, workingDirectory, SW_SHOW);
+		moduleFilename.clear();
+		do {
+			moduleFilename.resize(moduleFilename.size() + MAX_PATH);
+			// On failure, this will return the same value as passed in, but success will always be one lower.
+			sz = GetModuleFileName(GetModuleHandle(nullptr), &moduleFilename[0], (DWORD)moduleFilename.size());
+		} while (sz >= moduleFilename.size());
+		moduleFilename.resize(sz);
+	}
+
+	void ExitAndRestart(bool overrideArgs, const std::string &args) {
+		SpawnNewInstance(overrideArgs, args);
 
 		ExitProcess(0);
 	}
+
+	void SpawnNewInstance(bool overrideArgs, const std::string &args) {
+		// This preserves arguments (for example, config file) and working directory.
+		std::wstring workingDirectory;
+		std::wstring moduleFilename;
+		GetSelfExecuteParams(workingDirectory, moduleFilename);
+
+		const wchar_t *cmdline;
+		std::wstring wargs;
+		if (overrideArgs) {
+			wargs = ConvertUTF8ToWString(args);
+			cmdline = wargs.c_str();
+		} else {
+			cmdline = RemoveExecutableFromCommandLine(GetCommandLineW());
+		}
+		ShellExecute(nullptr, nullptr, moduleFilename.c_str(), cmdline, workingDirectory.c_str(), SW_SHOW);
+	}
 }
-
-
 
 GenericListControl::GenericListControl(HWND hwnd, const GenericListViewDef& def)
 	: handle(hwnd), columns(def.columns),columnCount(def.columnCount),valid(false),
@@ -177,8 +200,8 @@ GenericListControl::GenericListControl(HWND hwnd, const GenericListViewDef& def)
 
 	int totalListSize = rect.right-rect.left;
 	for (int i = 0; i < columnCount; i++) {
-		lvc.cx = columns[i].size * totalListSize;
-		lvc.pszText = columns[i].name;
+		lvc.cx = (int)(columns[i].size * totalListSize);
+		lvc.pszText = (LPTSTR)columns[i].name;
 
 		if (columns[i].flags & GLVC_CENTERED)
 			lvc.fmt = LVCFMT_CENTER;

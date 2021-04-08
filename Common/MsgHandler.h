@@ -17,31 +17,17 @@
 
 #pragma once
 
-// Message alerts
-enum MSG_TYPE {
-	INFORMATION,
-	QUESTION,
-	WARNING,
-	CRITICAL
-};
-
-extern bool MsgAlert(bool yes_no, int Style, const char* format, ...)
+// Currently only actually shows a dialog box on Windows.
+bool ShowAssertDialog(const char *function, const char *file, int line, const char *expression, const char* format, ...)
 #ifdef __GNUC__
-	__attribute__((format(printf, 3, 4)))
+	__attribute__((format(printf, 5, 6)))
 #endif
 	;
-void SetEnableAlert(bool enable);
 
-#ifndef GEKKO
-#ifdef _WIN32
-	#define PanicAlert(format, ...) MsgAlert(false, WARNING, format, __VA_ARGS__) 
-	#define PanicYesNo(format, ...) MsgAlert(true, WARNING, format, __VA_ARGS__) 
-#else
-	#define PanicAlert(format, ...) MsgAlert(false, WARNING, format, ##__VA_ARGS__) 
-	#define PanicYesNo(format, ...) MsgAlert(true, WARNING, format, ##__VA_ARGS__) 
-#endif
-#else
-// GEKKO
-	#define PanicAlert(format, ...) ;
-	#define PanicYesNo(format, ...) ;
+#if defined(__ANDROID__)
+
+// Tricky macro to get the basename, that also works if *built* on Win32.
+#define __FILENAME__ (__builtin_strrchr(__FILE__, '/') ? __builtin_strrchr(__FILE__, '/') + 1 : (__builtin_strrchr(__FILE__, '\\') ? __builtin_strrchr(__FILE__, '\\') + 1 : __FILE__))
+void AndroidAssert(const char *func, const char *file, int line, const char *condition, const char *fmt, ...);
+
 #endif

@@ -17,8 +17,8 @@
 
 #include <cstring>
 
-#include "base/logging.h"
 #include "Common/CPUDetect.h"
+#include "Common/Log.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/MIPS/ARM/ArmRegCacheFPU.h"
 #include "Core/MIPS/ARM/ArmJit.h"
@@ -27,7 +27,7 @@
 using namespace ArmGen;
 using namespace ArmJitConstants;
 
-ArmRegCacheFPU::ArmRegCacheFPU(MIPSState *mips, MIPSComp::JitState *js, MIPSComp::JitOptions *jo) : mips_(mips), js_(js), jo_(jo), vr(mr + 32), initialReady(false) {
+ArmRegCacheFPU::ArmRegCacheFPU(MIPSState *mipsState, MIPSComp::JitState *js, MIPSComp::JitOptions *jo) : mips_(mipsState), js_(js), jo_(jo), vr(mr + 32) {
 	if (cpu_info.bNEON) {
 		numARMFpuReg_ = 32;
 	} else {
@@ -209,8 +209,8 @@ void ArmRegCacheFPU::MapInIn(MIPSReg rd, MIPSReg rs) {
 
 void ArmRegCacheFPU::MapDirtyIn(MIPSReg rd, MIPSReg rs, bool avoidLoad) {
 	SpillLock(rd, rs);
-	bool overlap = avoidLoad && rd == rs;
-	MapReg(rd, overlap ? MAP_DIRTY : MAP_NOINIT);
+	bool load = !avoidLoad || rd == rs;
+	MapReg(rd, load ? MAP_DIRTY : MAP_NOINIT);
 	MapReg(rs);
 	ReleaseSpillLock(rd);
 	ReleaseSpillLock(rs);
@@ -218,8 +218,8 @@ void ArmRegCacheFPU::MapDirtyIn(MIPSReg rd, MIPSReg rs, bool avoidLoad) {
 
 void ArmRegCacheFPU::MapDirtyInIn(MIPSReg rd, MIPSReg rs, MIPSReg rt, bool avoidLoad) {
 	SpillLock(rd, rs, rt);
-	bool overlap = avoidLoad && (rd == rs || rd == rt);
-	MapReg(rd, overlap ? MAP_DIRTY : MAP_NOINIT);
+	bool load = !avoidLoad || (rd == rs || rd == rt);
+	MapReg(rd, load ? MAP_DIRTY : MAP_NOINIT);
 	MapReg(rt);
 	MapReg(rs);
 	ReleaseSpillLock(rd);
@@ -278,21 +278,21 @@ void ArmRegCacheFPU::MapInInV(int vs, int vt) {
 }
 
 void ArmRegCacheFPU::MapDirtyInV(int vd, int vs, bool avoidLoad) {
-	bool overlap = avoidLoad && (vd == vs);
+	bool load = !avoidLoad || (vd == vs);
 	SpillLockV(vd);
 	SpillLockV(vs);
-	MapRegV(vd, overlap ? MAP_DIRTY : MAP_NOINIT);
+	MapRegV(vd, load ? MAP_DIRTY : MAP_NOINIT);
 	MapRegV(vs);
 	ReleaseSpillLockV(vd);
 	ReleaseSpillLockV(vs);
 }
 
 void ArmRegCacheFPU::MapDirtyInInV(int vd, int vs, int vt, bool avoidLoad) {
-	bool overlap = avoidLoad && ((vd == vs) || (vd == vt));
+	bool load = !avoidLoad || (vd == vs || vd == vt);
 	SpillLockV(vd);
 	SpillLockV(vs);
 	SpillLockV(vt);
-	MapRegV(vd, overlap ? MAP_DIRTY : MAP_NOINIT);
+	MapRegV(vd, load ? MAP_DIRTY : MAP_NOINIT);
 	MapRegV(vs);
 	MapRegV(vt);
 	ReleaseSpillLockV(vd);
@@ -324,7 +324,6 @@ void ArmRegCacheFPU::FlushArmReg(ARMReg r) {
 	} else if (r >= D0 && r <= D31) {
 		// TODO: Convert to S regs and flush them individually.
 	} else if (r >= Q0 && r <= Q15) {
-		int quad = r - Q0;
 		QFlush(r);
 	}
 }
@@ -463,13 +462,13 @@ void ArmRegCacheFPU::FlushAll() {
 
 		if (ar[a].isDirty) {
 			if (m == -1) {
-				ILOG("ARM reg %i is dirty but has no mipsreg", a);
+				INFO_LOG(JIT, "ARM reg %i is dirty but has no mipsreg", a);
 				continue;
 			}
 
 			int c = FlushGetSequential(a, GetNumARMFPURegs());
 			if (c == 1) {
-				// ILOG("Got single register: %i (%i)", a, m);
+				// INFO_LOG(JIT, "Got single register: %i (%i)", a, m);
 				emit_->VSTR((ARMReg)(a + S0), CTXREG, GetMipsRegOffset(m));
 			} else if (c == 2) {
 				// Probably not worth using VSTMIA for two.
@@ -477,9 +476,9 @@ void ArmRegCacheFPU::FlushAll() {
 				emit_->VSTR((ARMReg)(a + S0), CTXREG, offset);
 				emit_->VSTR((ARMReg)(a + 1 + S0), CTXREG, offset + 4);
 			} else {
-				// ILOG("Got sequence: %i at %i (%i)", c, a, m);
+				// INFO_LOG(JIT, "Got sequence: %i at %i (%i)", c, a, m);
 				emit_->ADDI2R(SCRATCHREG1, CTXREG, GetMipsRegOffset(m), SCRATCHREG2);
-				// ILOG("VSTMIA R0, %i, %i", a, c);
+				// INFO_LOG(JIT, "VSTMIA R0, %i, %i", a, c);
 				emit_->VSTMIA(SCRATCHREG1, false, (ARMReg)(S0 + a), c);
 			}
 
@@ -561,7 +560,7 @@ int ArmRegCacheFPU::GetTempR() {
 	}
 
 	ERROR_LOG(CPU, "Out of temp regs! Might need to DiscardR() some");
-	_assert_msg_(JIT, 0, "Regcache ran out of temp regs, might need to DiscardR() some.");
+	_assert_msg_(false, "Regcache ran out of temp regs, might need to DiscardR() some.");
 	return -1;
 }
 
@@ -732,8 +731,6 @@ void ArmRegCacheFPU::QFlush(int quad) {
 
 int ArmRegCacheFPU::QGetFreeQuad(int start, int count, const char *reason) {
 	// Search for a free quad. A quad is free if the first register in it is free.
-	int quad = -1;
-	
 	for (int i = 0; i < count; i++) {
 		int q = (i + start) & 15;
 
@@ -908,7 +905,7 @@ ARMReg ArmRegCacheFPU::QMapReg(int vreg, VectorSize sz, int flags) {
 	// We didn't find the extra register, but we got a list of regs to flush. Flush 'em.
 	// Here we can check for opportunities to do a "transpose-flush" of row vectors, etc.
 	if (!quadsToFlush.empty()) {
-		ILOG("New mapping %s collided with %i quads, flushing them.", GetVectorNotation(vreg, sz), (int)quadsToFlush.size());
+		INFO_LOG(JIT, "New mapping %s collided with %d quads, flushing them.", GetVectorNotation(vreg, sz), (int)quadsToFlush.size());
 	}
 	for (size_t i = 0; i < quadsToFlush.size(); i++) {
 		QFlush(quadsToFlush[i]);

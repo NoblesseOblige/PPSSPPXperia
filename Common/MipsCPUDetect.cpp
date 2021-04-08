@@ -15,12 +15,16 @@
 // Official SVN repository and contact information can be found at
 // http://code.google.com/p/dolphin-emu/
 
-#ifdef __mips__
+#include "ppsspp_config.h"
+#if PPSSPP_ARCH(MIPS) || PPSSPP_ARCH(MIPS64)
 
-#include "Common.h"
-#include "CPUDetect.h"
-#include "StringUtils.h"
-#include "FileUtil.h"
+#include "Common/Common.h"
+#include "Common/CPUDetect.h"
+#include "Common/StringUtils.h"
+#include "Common/File/FileUtil.h"
+#include "Common/Data/Encoding/Utf8.h"
+#include <cstring>
+#include <sstream>
 
 // Only Linux platforms have /proc/cpuinfo
 #if defined(__linux__)
@@ -158,7 +162,7 @@ void CPUInfo::Detect()
 {
 	// Set some defaults here
 	HTT = false;
-#ifdef PPSSPP_ARCH(MIPS64)
+#if PPSSPP_ARCH(MIPS64)
 	OS64bit = true;
 	CPU64bit = true;
 	Mode64bit = true;
@@ -199,4 +203,4 @@ std::string CPUInfo::Summarize()
 	return sum;
 }
 
-#endif // __mips__
+#endif // PPSSPP_ARCH(MIPS) || PPSSPP_ARCH(MIPS64)

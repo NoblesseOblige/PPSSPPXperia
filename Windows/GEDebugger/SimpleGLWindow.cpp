@@ -15,14 +15,18 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "Common/CommonWindows.h"
 #include <WindowsX.h>
-#include "math/lin/matrix4x4.h"
-#include "gfx_es2/glsl_program.h"
-#include "gfx_es2/gpu_features.h"
+#include "Common/Math/lin/matrix4x4.h"
+#include "Common/GPU/OpenGL/GLSLProgram.h"
+#include "Common/GPU/OpenGL/GLFeatures.h"
 #include "Common/Common.h"
+#include "Common/Log.h"
 #include "Windows/GEDebugger/SimpleGLWindow.h"
 
 const wchar_t *SimpleGLWindow::windowClass = L"SimpleGLWindow";
+
+using namespace Lin;
 
 void SimpleGLWindow::RegisterClass() {
 	WNDCLASSEX wndClass;
@@ -55,9 +59,7 @@ static const char tex_fs[] =
 	"}\n";
 
 static const char basic_vs[] =
-#ifndef USING_GLES2
 	"#version 120\n"
-#endif
 	"attribute vec4 a_position;\n"
 	"attribute vec2 a_texcoord0;\n"
 	"uniform mat4 u_viewproj;\n"
@@ -68,8 +70,7 @@ static const char basic_vs[] =
 	"}\n";
 
 SimpleGLWindow::SimpleGLWindow(HWND wnd)
-	: hWnd_(wnd), valid_(false), drawProgram_(nullptr), vao_(0), tex_(0), flags_(0), zoom_(false),
-	  dragging_(false), offsetX_(0), offsetY_(0), reformatBuf_(nullptr), hoverCallback_(nullptr) {
+	: hWnd_(wnd) {
 	SetWindowLongPtr(wnd, GWLP_USERDATA, (LONG_PTR) this);
 }
 
@@ -110,7 +111,7 @@ void SimpleGLWindow::SetupGL() {
 	pfd.cDepthBits = 16;
 	pfd.iLayerType = PFD_MAIN_PLANE;
 
-#define ENFORCE(x, msg) { if (!(x)) { ERROR_LOG(COMMON, "SimpleGLWindow: %s (%08x)", msg, GetLastError()); return; } }
+#define ENFORCE(x, msg) { if (!(x)) { ERROR_LOG(COMMON, "SimpleGLWindow: %s (%08x)", msg, (uint32_t)GetLastError()); return; } }
 
 	ENFORCE(hDC_ = GetDC(hWnd_), "Unable to create DC.");
 	ENFORCE(pixelFormat = ChoosePixelFormat(hDC_, &pfd), "Unable to match pixel format.");
@@ -238,7 +239,7 @@ void SimpleGLWindow::Draw(const u8 *data, int w, int h, bool flipped, Format fmt
 
 	GLint components = GL_RGBA;
 	GLint memComponents = 0;
-	GLenum glfmt;
+	GLenum glfmt = GL_UNSIGNED_BYTE;
 	const u8 *finalData = data;
 	if (fmt == FORMAT_8888) {
 		glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
@@ -297,7 +298,7 @@ void SimpleGLWindow::Draw(const u8 *data, int w, int h, bool flipped, Format fmt
 			glfmt = GL_UNSIGNED_BYTE;
 			components = GL_RED;
 		} else {
-			_dbg_assert_msg_(COMMON, false, "Invalid SimpleGLWindow format.");
+			_dbg_assert_msg_(false, "Invalid SimpleGLWindow format.");
 		}
 	}
 
@@ -365,10 +366,23 @@ void SimpleGLWindow::GetContentSize(float &x, float &y, float &fw, float &fh) {
 void SimpleGLWindow::Redraw(bool andSwap) {
 	DrawChecker();
 
-	if (tw_ == 0 && th_ == 0) {
+	auto swapWithCallback = [andSwap, this]() {
 		if (andSwap) {
-			Swap();
+			swapped_ = false;
+			if (redrawCallback_ && !inRedrawCallback_) {
+				inRedrawCallback_ = true;
+				redrawCallback_();
+				inRedrawCallback_ = false;
+			}
+			// In case the callback swaps, don't do it twice.
+			if (!swapped_) {
+				Swap();
+			}
 		}
+	};
+
+	if (tw_ == 0 && th_ == 0) {
+		swapWithCallback();
 		return;
 	}
 
@@ -412,7 +426,7 @@ void SimpleGLWindow::Redraw(bool andSwap) {
 	glDrawElements(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, vao_ ? 0 : indices);
 
 	if (andSwap) {
-		Swap();
+		swapWithCallback();
 	}
 }
 
@@ -423,7 +437,9 @@ void SimpleGLWindow::Clear() {
 }
 
 void SimpleGLWindow::Begin() {
-	Redraw(false);
+	if (!inRedrawCallback_) {
+		Redraw(false);
+	}
 
 	if (vao_) {
 		glBindVertexArray(0);
@@ -541,6 +557,23 @@ bool SimpleGLWindow::Leave() {
 	return true;
 }
 
+bool SimpleGLWindow::RightClick(int mouseX, int mouseY) {
+	if (rightClickCallback_ == nullptr) {
+		return false;
+	}
+
+	POINT pt{mouseX, mouseY};
+	ClientToScreen(hWnd_, &pt);
+
+	rightClickCallback_(0);
+	int result = TrackPopupMenuEx(rightClickMenu_, TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, hWnd_, 0);
+	if (result != 0) {
+		rightClickCallback_(result);
+	}
+
+	return true;
+}
+
 const u8 *SimpleGLWindow::Reformat(const u8 *data, Format fmt, u32 numPixels) {
 	if (!reformatBuf_ || reformatBufSize_ < numPixels) {
 		delete [] reformatBuf_;
@@ -587,6 +620,7 @@ LRESULT CALLBACK SimpleGLWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 	switch (msg) {
 	case WM_LBUTTONDOWN:
 	case WM_LBUTTONUP:
+	case WM_RBUTTONUP:
 	case WM_MOUSEMOVE:
 		mouseX = GET_X_LPARAM(lParam);
 		mouseY = GET_Y_LPARAM(lParam);
@@ -629,6 +663,12 @@ LRESULT CALLBACK SimpleGLWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
 			return 0;
 		}
 		if (win->Hover(mouseX, mouseY)) {
+			return 0;
+		}
+		break;
+
+	case WM_RBUTTONUP:
+		if (win->RightClick(mouseX, mouseY)) {
 			return 0;
 		}
 		break;

@@ -20,8 +20,8 @@
 
 #include <cstring>
 
-#include "base/logging.h"
 #include "Common/CPUDetect.h"
+#include "Common/Log.h"
 #include "Core/Reporting.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/MIPS/ARM64/Arm64RegCacheFPU.h"
@@ -31,7 +31,7 @@
 using namespace Arm64Gen;
 using namespace Arm64JitConstants;
 
-Arm64RegCacheFPU::Arm64RegCacheFPU(MIPSState *mips, MIPSComp::JitState *js, MIPSComp::JitOptions *jo) : mips_(mips), vr(mr + 32), js_(js), jo_(jo), initialReady(false) {
+Arm64RegCacheFPU::Arm64RegCacheFPU(MIPSState *mipsState, MIPSComp::JitState *js, MIPSComp::JitOptions *jo) : mips_(mipsState), vr(mr + 32), js_(js), jo_(jo) {
 	numARMFpuReg_ = 32;
 }
 
@@ -189,8 +189,8 @@ void Arm64RegCacheFPU::MapInIn(MIPSReg rd, MIPSReg rs) {
 
 void Arm64RegCacheFPU::MapDirtyIn(MIPSReg rd, MIPSReg rs, bool avoidLoad) {
 	SpillLock(rd, rs);
-	bool overlap = avoidLoad && rd == rs;
-	MapReg(rd, overlap ? MAP_DIRTY : MAP_NOINIT);
+	bool load = !avoidLoad || rd == rs;
+	MapReg(rd, load ? MAP_DIRTY : MAP_NOINIT);
 	MapReg(rs);
 	ReleaseSpillLock(rd);
 	ReleaseSpillLock(rs);
@@ -198,8 +198,8 @@ void Arm64RegCacheFPU::MapDirtyIn(MIPSReg rd, MIPSReg rs, bool avoidLoad) {
 
 void Arm64RegCacheFPU::MapDirtyInIn(MIPSReg rd, MIPSReg rs, MIPSReg rt, bool avoidLoad) {
 	SpillLock(rd, rs, rt);
-	bool overlap = avoidLoad && (rd == rs || rd == rt);
-	MapReg(rd, overlap ? MAP_DIRTY : MAP_NOINIT);
+	bool load = !avoidLoad || (rd == rs || rd == rt);
+	MapReg(rd, load ? MAP_DIRTY : MAP_NOINIT);
 	MapReg(rt);
 	MapReg(rs);
 	ReleaseSpillLock(rd);
@@ -258,21 +258,21 @@ void Arm64RegCacheFPU::MapInInV(int vs, int vt) {
 }
 
 void Arm64RegCacheFPU::MapDirtyInV(int vd, int vs, bool avoidLoad) {
-	bool overlap = avoidLoad && (vd == vs);
+	bool load = !avoidLoad || (vd == vs);
 	SpillLockV(vd);
 	SpillLockV(vs);
-	MapRegV(vd, overlap ? MAP_DIRTY : MAP_NOINIT);
+	MapRegV(vd, load ? MAP_DIRTY : MAP_NOINIT);
 	MapRegV(vs);
 	ReleaseSpillLockV(vd);
 	ReleaseSpillLockV(vs);
 }
 
 void Arm64RegCacheFPU::MapDirtyInInV(int vd, int vs, int vt, bool avoidLoad) {
-	bool overlap = avoidLoad && ((vd == vs) || (vd == vt));
+	bool load = !avoidLoad || (vd == vs || vd == vt);
 	SpillLockV(vd);
 	SpillLockV(vs);
 	SpillLockV(vt);
-	MapRegV(vd, overlap ? MAP_DIRTY : MAP_NOINIT);
+	MapRegV(vd, load ? MAP_DIRTY : MAP_NOINIT);
 	MapRegV(vs);
 	MapRegV(vt);
 	ReleaseSpillLockV(vd);
@@ -400,7 +400,7 @@ void Arm64RegCacheFPU::FlushAll() {
 
 		if (ar[a].isDirty) {
 			if (m == -1) {
-				ILOG("ARM reg %i is dirty but has no mipsreg", a);
+				INFO_LOG(JIT, "ARM reg %d is dirty but has no mipsreg", a);
 				continue;
 			}
 
@@ -423,7 +423,7 @@ void Arm64RegCacheFPU::FlushAll() {
 	// Sanity check
 	for (int i = 0; i < numARMFpuReg_; i++) {
 		if (ar[i].mipsReg != -1) {
-			ERROR_LOG(JIT, "Flush fail: ar[%i].mipsReg=%i", i, ar[i].mipsReg);
+			ERROR_LOG(JIT, "Flush fail: ar[%d].mipsReg=%d", i, ar[i].mipsReg);
 		}
 	}
 	pendingFlush = false;
@@ -479,7 +479,7 @@ int Arm64RegCacheFPU::GetTempR() {
 	}
 
 	ERROR_LOG(CPU, "Out of temp regs! Might need to DiscardR() some");
-	_assert_msg_(JIT, 0, "Regcache ran out of temp regs, might need to DiscardR() some.");
+	_assert_msg_(false, "Regcache ran out of temp regs, might need to DiscardR() some.");
 	return -1;
 }
 

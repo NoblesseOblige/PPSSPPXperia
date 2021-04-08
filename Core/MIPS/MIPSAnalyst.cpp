@@ -15,13 +15,19 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "ppsspp_config.h"
 #include <map>
-#include <unordered_map>
 #include <set>
+#include <unordered_map>
 #include <unordered_set>
-#include "base/mutex.h"
+#include <mutex>
+
 #include "ext/cityhash/city.h"
-#include "Common/FileUtil.h"
+#include "ext/xxhash.h"
+
+#include "Common/File/FileUtil.h"
+#include "Common/Log.h"
+#include "Common/TimeUtil.h"
 #include "Core/Config.h"
 #include "Core/MemMap.h"
 #include "Core/System.h"
@@ -33,14 +39,13 @@
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/Debugger/DebugInterface.h"
 #include "Core/HLE/ReplaceTables.h"
-#include "ext/xxhash.h"
 
 using namespace MIPSCodeUtils;
 
 // Not in a namespace because MSVC's debugger doesn't like it
 typedef std::vector<MIPSAnalyst::AnalyzedFunction> FunctionsVector;
 static FunctionsVector functions;
-recursive_mutex functions_lock;
+std::recursive_mutex functions_lock;
 
 // One function can appear in multiple copies in memory, and they will all have 
 // the same hash and should all be replaced if possible.
@@ -98,6 +103,7 @@ static const HardHashTableEntry hardcodedHashes[] = {
 	{ 0x030507c9a1f0fc85, 92, "matrix_rot_x", },
 	{ 0x0483fceefa4557ff, 1360, "__udivdi3", },
 	{ 0x0558ad5c5be00ca1, 76, "vtfm_t", },
+	{ 0x05aceb23092fd6a1, 36, "zettai_hero_update_minimap_tex", }, // Zettai Hero Project (US)
 	{ 0x05aedd0c04b451a1, 356, "sqrt", },
 	{ 0x0654fc8adbe16ef7, 28, "vmul_q", },
 	{ 0x06628f6052cda3c1, 1776, "toheart2_download_frame", }, // To Heart 2 Portable
@@ -173,6 +179,7 @@ static const HardHashTableEntry hardcodedHashes[] = {
 	{ 0x3024e961d1811dea, 396, "fmod", },
 	{ 0x3050bfd0e729dfbf, 220, "atvoffroadfuryblazintrails_download_frame", }, // ATV Offroad Fury Blazin' Trails (US)
 	{ 0x30c9c4f420573eb6, 540, "expf", },
+	{ 0x311779b4db21dbf3, 124, "motorstorm_pixel_read" }, // Motorstorm Arctic Edge (US)
 	{ 0x317afeb882ff324a, 212, "memcpy", }, // Mimana (US)
 	{ 0x31ea2e192f5095a1, 52, "vector_add_t", },
 	{ 0x31f523ef18898e0e, 420, "logf", },
@@ -320,6 +327,7 @@ static const HardHashTableEntry hardcodedHashes[] = {
 	{ 0x8df2928848857e97, 164, "strcat", },
 	{ 0x8e48cabd529ca6b5, 52, "vector_multiply_t", },
 	{ 0x8e97dcb03fbaba5c, 104, "vmmul_q_transp", },
+	{ 0x8ecf804bbe7922e5, 572, "worms_copy_normalize_alpha" }, // Worms Battle Islands (US)
 	{ 0x8ee81b03d2eef1e7, 28, "vmul_t", },
 	{ 0x8f09fb8693c3c49d, 992, "kirameki_school_life_download_frame", }, // Hentai Ouji To Warawanai Neko
 	{ 0x8f19c41e8b987e18, 100, "matrix_mogrify", },
@@ -344,6 +352,7 @@ static const HardHashTableEntry hardcodedHashes[] = {
 	{ 0x9e6ce11f9d49f954, 292, "memcpy", }, // Jeanne d'Arc (US)
 	{ 0x9f269daa6f0da803, 128, "dl_write_scissor_region", },
 	{ 0x9f7919eeb43982b0, 208, "__fixdfsi", },
+	{ 0xa1c9b0a2c71235bf, 1752, "marvelalliance1_copy" }, // Marvel Ultimate Alliance 1 (EU)
 	{ 0xa1ca0640f11182e7, 72, "strcspn", },
 	{ 0xa243486be51ce224, 272, "cosf", },
 	{ 0xa2bcef60a550a3ef, 92, "matrix_rot_z", },
@@ -380,6 +389,7 @@ static const HardHashTableEntry hardcodedHashes[] = {
 	{ 0xb0ef265e87899f0a, 32, "vector_divide_t_s", },
 	{ 0xb183a37baa12607b, 32, "vscl_t", },
 	{ 0xb1a3e60a89af9857, 20, "fabs", },
+	{ 0xb25670ff47b4843d, 232, "starocean_clear_framebuf" },
 	{ 0xb3fef47fb27d57c9, 44, "vector_scale_t", },
 	{ 0xb43fd5078ae78029, 84, "send_commandi_stall", },
 	{ 0xb43ffbd4dc446dd2, 324, "atan2f", },
@@ -495,6 +505,7 @@ static const HardHashTableEntry hardcodedHashes[] = {
 	{ 0xfe4f0280240008e9, 28, "vavg_q", },
 	{ 0xfe5dd338ab862291, 216, "memset", }, // Metal Gear Solid: Peace Walker demo
 	{ 0xffc8f5f8f946152c, 192, "dl_write_light_color", },
+	{ 0x249a3c5981c73480, 1472, "openseason_data_decode", },  // Open Season
 };
 
 namespace MIPSAnalyst {
@@ -741,16 +752,16 @@ namespace MIPSAnalyst {
 	}
 	
 	void Reset() {
-		lock_guard guard(functions_lock);
+		std::lock_guard<std::recursive_mutex> guard(functions_lock);
 		functions.clear();
 		hashToFunction.clear();
 	}
 
 	void UpdateHashToFunctionMap() {
-		lock_guard guard(functions_lock);
+		std::lock_guard<std::recursive_mutex> guard(functions_lock);
 		hashToFunction.clear();
 		// Really need to detect C++11 features with better defines.
-#if !defined(IOS)
+#if !PPSSPP_PLATFORM(IOS)
 		hashToFunction.reserve(functions.size());
 #endif
 		for (auto iter = functions.begin(); iter != functions.end(); iter++) {
@@ -869,18 +880,21 @@ namespace MIPSAnalyst {
 	}
 
 	void HashFunctions() {
-		lock_guard guard(functions_lock);
+		std::lock_guard<std::recursive_mutex> guard(functions_lock);
 		std::vector<u32> buffer;
 
 		for (auto iter = functions.begin(), end = functions.end(); iter != end; iter++) {
 			AnalyzedFunction &f = *iter;
+			if (!Memory::IsValidRange(f.start, f.end - f.start + 4)) {
+				continue;
+			}
 
 			// This is unfortunate.  In case of emuhacks or relocs, we have to make a copy.
 			buffer.resize((f.end - f.start + 4) / 4);
 			size_t pos = 0;
 			for (u32 addr = f.start; addr <= f.end; addr += 4) {
 				u32 validbits = 0xFFFFFFFF;
-				MIPSOpcode instr = Memory::Read_Instruction(addr, true);
+				MIPSOpcode instr = Memory::ReadUnchecked_Instruction(addr, true);
 				if (MIPS_IS_EMUHACK(instr)) {
 					f.hasHash = false;
 					goto skip;
@@ -899,6 +913,32 @@ namespace MIPSAnalyst {
 skip:
 			;
 		}
+	}
+
+	void PrecompileFunction(u32 startAddr, u32 length) {
+		// Direct calls to this ignore the bPreloadFunctions flag, since it's just for stubs.
+		if (MIPSComp::jit) {
+			MIPSComp::jit->CompileFunction(startAddr, length);
+		}
+	}
+
+	void PrecompileFunctions() {
+		if (!g_Config.bPreloadFunctions) {
+			return;
+		}
+		std::lock_guard<std::recursive_mutex> guard(functions_lock);
+
+		// TODO: Load from cache file if available instead.
+
+		double st = time_now_d();
+		for (auto iter = functions.begin(), end = functions.end(); iter != end; iter++) {
+			const AnalyzedFunction &f = *iter;
+
+			PrecompileFunction(f.start, f.end - f.start + 4);
+		}
+		double et = time_now_d();
+
+		NOTICE_LOG(JIT, "Precompiled %d MIPS functions in %0.2f milliseconds", (int)functions.size(), (et - st) * 1000.0);
 	}
 
 	static const char *DefaultFunctionName(char buffer[256], u32 startAddr) {
@@ -943,7 +983,8 @@ skip:
 		// We assume the furthest jumpback is within the func.
 		u32 furthestJumpbackAddr = INVALIDTARGET;
 
-		for (u32 ahead = fromAddr; ahead < fromAddr + MAX_AHEAD_SCAN; ahead += 4) {
+		const u32 scanEnd = fromAddr + Memory::ValidSize(fromAddr, MAX_AHEAD_SCAN);
+		for (u32 ahead = fromAddr; ahead < scanEnd; ahead += 4) {
 			MIPSOpcode aheadOp = Memory::Read_Instruction(ahead, true);
 			u32 target = GetBranchTargetNoRA(ahead, aheadOp);
 			if (target == INVALIDTARGET && ((aheadOp & 0xFC000000) == 0x08000000)) {
@@ -985,8 +1026,10 @@ skip:
 		return furthestJumpbackAddr;
 	}
 
-	void ScanForFunctions(u32 startAddr, u32 endAddr, bool insertSymbols) {
-		lock_guard guard(functions_lock);
+	bool ScanForFunctions(u32 startAddr, u32 endAddr, bool insertSymbols) {
+		std::lock_guard<std::recursive_mutex> guard(functions_lock);
+
+		FunctionsVector new_functions;
 
 		AnalyzedFunction currentFunction = {startAddr};
 
@@ -1108,7 +1151,7 @@ skip:
 					}
 				}
 
-				functions.push_back(currentFunction);
+				new_functions.push_back(currentFunction);
 
 				furthestBranch = 0;
 				addr += 4;
@@ -1121,10 +1164,12 @@ skip:
 			}
 		}
 
-		currentFunction.end = addr + 4;
-		functions.push_back(currentFunction);
+		if (addr <= endAddr) {
+			currentFunction.end = addr + 4;
+			new_functions.push_back(currentFunction);
+		}
 
-		for (auto iter = functions.begin(); iter != functions.end(); iter++) {
+		for (auto iter = new_functions.begin(); iter != new_functions.end(); iter++) {
 			iter->size = iter->end - iter->start + 4;
 			if (insertSymbols && !iter->foundInSymbolMap) {
 				char temp[256];
@@ -1132,6 +1177,12 @@ skip:
 			}
 		}
 
+		// Concatenate the new functions to the end of the old ones.
+		functions.insert(functions.end(), new_functions.begin(), new_functions.end());
+		return insertSymbols;
+	}
+
+	void FinalizeScan(bool insertSymbols) {
 		HashFunctions();
 
 		std::string hashMapFilename = GetSysDirectory(DIRECTORY_SYSTEM) + "knownfuncs.ini";
@@ -1151,7 +1202,7 @@ skip:
 	}
 
 	void RegisterFunction(u32 startAddr, u32 size, const char *name) {
-		lock_guard guard(functions_lock);
+		std::lock_guard<std::recursive_mutex> guard(functions_lock);
 
 		// Check if we have this already
 		for (auto iter = functions.begin(); iter != functions.end(); iter++) {
@@ -1184,7 +1235,7 @@ skip:
 	}
 
 	void ForgetFunctions(u32 startAddr, u32 endAddr) {
-		lock_guard guard(functions_lock);
+		std::lock_guard<std::recursive_mutex> guard(functions_lock);
 
 		// It makes sense to forget functions as modules are unloaded but it breaks
 		// the easy way of saving a hashmap by unloading and loading a game. I added
@@ -1221,7 +1272,7 @@ skip:
 	}
 
 	void ReplaceFunctions() {
-		lock_guard guard(functions_lock);
+		std::lock_guard<std::recursive_mutex> guard(functions_lock);
 
 		for (size_t i = 0; i < functions.size(); i++) {
 			WriteReplaceInstructions(functions[i].start, functions[i].hash, functions[i].size);
@@ -1229,7 +1280,7 @@ skip:
 	}
 
 	void UpdateHashMap() {
-		lock_guard guard(functions_lock);
+		std::lock_guard<std::recursive_mutex> guard(functions_lock);
 
 		for (auto it = functions.begin(), end = functions.end(); it != end; ++it) {
 			const AnalyzedFunction &f = *it;
@@ -1376,6 +1427,7 @@ skip:
 		memset(&info, 0, sizeof(info));
 
 		if (!Memory::IsValidAddress(address)) {
+			info.opcodeAddress = address;
 			return info;
 		}
 
@@ -1491,7 +1543,7 @@ skip:
 		}
 
 		// lw, sh, ...
-		if ((opInfo & IN_MEM) || (opInfo & OUT_MEM)) {
+		if (!IsSyscall(op) && (opInfo & (IN_MEM | OUT_MEM)) != 0) {
 			info.isDataAccess = true;
 			switch (opInfo & MEMTYPE_MASK) {
 			case MEMTYPE_BYTE:

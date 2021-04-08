@@ -18,7 +18,11 @@ import android.os.Build;
 import android.os.Handler;
 import android.util.Log;
 import android.view.MotionEvent;
-import com.bda.controller.*;
+
+import com.bda.controller.Controller;
+import com.bda.controller.ControllerListener;
+import com.bda.controller.KeyEvent;
+import com.bda.controller.StateEvent;
 
 public class NativeGLView extends GLSurfaceView implements SensorEventListener, ControllerListener {
 	private static String TAG = "NativeGLView";
@@ -35,25 +39,7 @@ public class NativeGLView extends GLSurfaceView implements SensorEventListener, 
 		super(activity);
 		mActivity = activity;
 
-		/*// TODO: This would be nice.
-		if (Build.VERSION.SDK_INT >= 11) {
-			try {
-				Method method_setPreserveEGLContextOnPause = GLSurfaceView.class.getMethod(
-						"setPreserveEGLContextOnPause", new Class[] { Boolean.class });
-				Log.i(TAG, "Invoking setPreserveEGLContextOnPause");
-				method_setPreserveEGLContextOnPause.invoke(this, true);
-			} catch (NoSuchMethodException e) {
-				e.printStackTrace();
-			} catch (IllegalArgumentException e) {
-				e.printStackTrace();
-			} catch (IllegalAccessException e) {
-				e.printStackTrace();
-			} catch (InvocationTargetException e) {
-				e.printStackTrace();
-			}
-		}*/
-
-		mSensorManager = (SensorManager)activity.getSystemService(Activity.SENSOR_SERVICE);
+		mSensorManager = (SensorManager) activity.getSystemService(Activity.SENSOR_SERVICE);
 		mAccelerometer = mSensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
 
 		mController = Controller.getInstance(activity);
@@ -105,7 +91,7 @@ public class NativeGLView extends GLSurfaceView implements SensorEventListener, 
 			if (code != 0) {
 				if (canReadToolType) {
 					int tool = getToolType(ev, i);
-					code |= tool << 10;  // We use the Android tool type codes
+					code |= tool << 10; // We use the Android tool type codes
 				}
 				// Can't use || due to short circuit evaluation
 				numTouchesHandled += NativeApp.touch(ev.getX(i), ev.getY(i), code, pid) ? 1 : 0;
@@ -130,7 +116,6 @@ public class NativeGLView extends GLSurfaceView implements SensorEventListener, 
 
 	@Override
 	public void onPause() {
-		Log.i(TAG, "onPause");
 		super.onPause();
 		mSensorManager.unregisterListener(this);
 		if (mController != null) {
@@ -140,19 +125,16 @@ public class NativeGLView extends GLSurfaceView implements SensorEventListener, 
 
 	@Override
 	public void onResume() {
-		Log.i(TAG, "onResume");
 		super.onResume();
 		mSensorManager.registerListener(this, mAccelerometer, SensorManager.SENSOR_DELAY_GAME);
 		if (mController != null) {
 			mController.onResume();
-
 			// According to the docs, the Moga's state can be inconsistent here.
 			// We should do a one time poll. TODO
 		}
 	}
 
 	public void onDestroy() {
-		Log.i(TAG, "onDestroy");
 		if (mController != null) {
 			mController.exit();
 		}
@@ -177,7 +159,7 @@ public class NativeGLView extends GLSurfaceView implements SensorEventListener, 
 			}
 		}
 
-		boolean repeat = false;  // Moga has no repeats?
+		boolean repeat = false; // Moga has no repeats?
 		switch (event.getAction()) {
 		case KeyEvent.ACTION_DOWN:
 			NativeApp.keyDown(NativeApp.DEVICE_ID_PAD_0, event.getKeyCode(), repeat);

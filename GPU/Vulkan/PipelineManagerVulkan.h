@@ -17,41 +17,25 @@
 
 #pragma once
 
-#include <map>
+#include <cstring>
+#include "Common/Data/Collections/Hashmaps.h"
 
 #include "GPU/Common/VertexDecoderCommon.h"
 #include "GPU/Common/ShaderId.h"
+#include "GPU/Common/ShaderCommon.h"
 #include "GPU/Vulkan/VulkanUtil.h"
 #include "GPU/Vulkan/StateMappingVulkan.h"
 
-// PSP vertex format.
-enum class PspAttributeLocation {
-	POSITION = 0,
-	TEXCOORD = 1,
-	NORMAL = 2,
-	W1 = 3,
-	W2 = 4,
-	COLOR0 = 5,
-	COLOR1 = 6,
-
-	COUNT
-};
+#include "GPU/Vulkan/VulkanQueueRunner.h"
 
 struct VulkanPipelineKey {
 	VulkanPipelineRasterStateKey raster;  // prim is included here
-	bool useHWTransform;
-	const VertexDecoder *vtxDec;
+	VkRenderPass renderPass;
 	VkShaderModule vShader;
 	VkShaderModule fShader;
+	uint32_t vtxFmtId;
+	bool useHWTransform;
 
-	bool operator < (const VulkanPipelineKey &other) const {
-		if (raster < other.raster) return true; else if (other.raster < raster) return false;
-		if (useHWTransform < other.useHWTransform) return true; else if (other.useHWTransform < useHWTransform) return false;
-		if (vtxDec < other.vtxDec) return true; else if (other.vtxDec < vtxDec) return false;
-		if (vShader < other.vShader) return true; else if (other.vShader < vShader) return false;
-		if (fShader < other.fShader) return true; else if (other.fShader < fShader) return false;
-		return false;
-	}
 	void ToString(std::string *str) const {
 		str->resize(sizeof(*this));
 		memcpy(&(*str)[0], this, sizeof(*this));
@@ -59,33 +43,36 @@ struct VulkanPipelineKey {
 	void FromString(const std::string &str) {
 		memcpy(this, &str[0], sizeof(*this));
 	}
-};
-
-enum {
-	UB_VS_FS_BASE = (1 << 0),
-	UB_VS_BONES = (1 << 1),
-	UB_VS_LIGHTS = (1 << 2),
+	std::string GetDescription(DebugShaderStringType stringType) const;
 };
 
 // Simply wraps a Vulkan pipeline, providing some metadata.
 struct VulkanPipeline {
 	VkPipeline pipeline;
-	int uniformBlocks;  // UB_ enum above.
+	int flags;  // PipelineFlags enum above.
+
+	bool UsesBlendConstant() const { return (flags & PIPELINE_FLAG_USES_BLEND_CONSTANT) != 0; }
+	bool UsesLines() const { return (flags & PIPELINE_FLAG_USES_LINES) != 0; }
+	bool UsesDepthStencil() const { return (flags & PIPELINE_FLAG_USES_DEPTH_STENCIL) != 0; }
 };
 
 class VulkanContext;
 class VulkanVertexShader;
 class VulkanFragmentShader;
+class ShaderManagerVulkan;
+class DrawEngineCommon;
 
 class PipelineManagerVulkan {
 public:
 	PipelineManagerVulkan(VulkanContext *ctx);
 	~PipelineManagerVulkan();
 
-	VulkanPipeline *GetOrCreatePipeline(VkPipelineLayout layout, const VulkanPipelineRasterStateKey &rasterKey, const VertexDecoder *vtxDec, VulkanVertexShader *vs, VulkanFragmentShader *fs, bool useHwTransform);
+	VulkanPipeline *GetOrCreatePipeline(VkPipelineLayout layout, VkRenderPass renderPass, const VulkanPipelineRasterStateKey &rasterKey, const DecVtxFormat *decFmt, VulkanVertexShader *vs, VulkanFragmentShader *fs, bool useHwTransform);
 	int GetNumPipelines() const { return (int)pipelines_.size(); }
 
 	void Clear();
+
+	void SetLineWidth(float lw);
 
 	void DeviceLost();
 	void DeviceRestore(VulkanContext *vulkan);
@@ -93,8 +80,15 @@ public:
 	std::string DebugGetObjectString(std::string id, DebugShaderType type, DebugShaderStringType stringType);
 	std::vector<std::string> DebugGetObjectIDs(DebugShaderType type);
 
+	// Saves data for faster creation next time.
+	void SaveCache(FILE *file, bool saveRawPipelineCache, ShaderManagerVulkan *shaderManager, Draw::DrawContext *drawContext);
+	bool LoadCache(FILE *file, bool loadRawPipelineCache, ShaderManagerVulkan *shaderManager, Draw::DrawContext *drawContext, VkPipelineLayout layout);
+	void CancelCache();
+
 private:
-	std::map<VulkanPipelineKey, VulkanPipeline *> pipelines_;
-	VkPipelineCache pipelineCache_;
+	DenseHashMap<VulkanPipelineKey, VulkanPipeline *, nullptr> pipelines_;
+	VkPipelineCache pipelineCache_ = VK_NULL_HANDLE;
 	VulkanContext *vulkan_;
+	float lineWidth_ = 1.0f;
+	bool cancelCache_ = false;
 };

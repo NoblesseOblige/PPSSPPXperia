@@ -20,69 +20,50 @@
 // DO NOT EVER INCLUDE <windows.h> directly _or indirectly_ from this file
 // since it slows down the build a lot.
 
-#include <stdlib.h>
 #include <stdarg.h>
 
 #ifdef _MSC_VER
-#pragma warning (disable:4100)
+#pragma warning(disable:4100)
+#pragma warning(disable:4244)
 #endif
 
-// Force enable logging in the right modes. For some reason, something had changed
-// so that debugfast no longer logged.
-#if defined(_DEBUG) || defined(DEBUGFAST)
-#undef LOGGING
-#define LOGGING 1
-#endif
-
-#define STACKALIGN
-
-// An inheritable class to disallow the copy constructor and operator= functions
-class NonCopyable
-{
-protected:
-	NonCopyable() {}
-private:
-	NonCopyable(const NonCopyable&);
-	void operator=(const NonCopyable&);
-};
-
-#include "Log.h"
 #include "CommonTypes.h"
 #include "CommonFuncs.h"
 
-#ifdef __APPLE__
-// The Darwin ABI requires that stack frames be aligned to 16-byte boundaries.
-// This is only needed on i386 gcc - x86_64 already aligns to 16 bytes.
-#if defined __i386__ && defined __GNUC__
-#undef STACKALIGN
-#define STACKALIGN __attribute__((__force_align_arg_pointer__))
+#ifndef DISALLOW_COPY_AND_ASSIGN
+#define DISALLOW_COPY_AND_ASSIGN(t) \
+	t(const t &other) = delete;  \
+	void operator =(const t &other) = delete;
 #endif
 
-#define CHECK_HEAP_INTEGRITY()
+#ifndef ENUM_CLASS_BITOPS
+#define ENUM_CLASS_BITOPS(T) \
+	static inline T operator |(const T &lhs, const T &rhs) { \
+		return T((int)lhs | (int)rhs); \
+	} \
+	static inline T &operator |= (T &lhs, const T &rhs) { \
+		lhs = lhs | rhs; \
+		return lhs; \
+	} \
+	static inline bool operator &(const T &lhs, const T &rhs) { \
+		return ((int)lhs & (int)rhs) != 0; \
+	}
+#endif
 
-#elif defined(_WIN32)
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
+#endif
 
-// Check MSC ver
-	#if !defined _MSC_VER || _MSC_VER <= 1000
-		#error needs at least version 1000 of MSC
-	#endif
+#if defined(_WIN32)
 
 // Memory leak checks
 	#define CHECK_HEAP_INTEGRITY()
 
-// Alignment
-	#define MEMORY_ALIGNED16(x) __declspec(align(16)) x
-	#define GC_ALIGNED32(x) __declspec(align(32)) x
-	#define GC_ALIGNED64(x) __declspec(align(64)) x
-	#define GC_ALIGNED128(x) __declspec(align(128)) x
-	#define GC_ALIGNED16_DECL(x) __declspec(align(16)) x
-	#define GC_ALIGNED64_DECL(x) __declspec(align(64)) x
-
-// Debug definitions
+	// Debug definitions
 	#if defined(_DEBUG)
 		#include <crtdbg.h>
 		#undef CHECK_HEAP_INTEGRITY
-		#define CHECK_HEAP_INTEGRITY() {if (!_CrtCheckMemory()) PanicAlert("memory corruption detected. see log.");}
+		#define CHECK_HEAP_INTEGRITY() {if (!_CrtCheckMemory()) _assert_msg_(false, "Memory corruption detected. See log.");}
 	#endif
 #else
 
@@ -98,36 +79,18 @@ private:
 #endif
 
 #define __forceinline inline __attribute__((always_inline))
-#define MEMORY_ALIGNED16(x) __attribute__((aligned(16))) x
-#define GC_ALIGNED32(x) __attribute__((aligned(32))) x
-#define GC_ALIGNED64(x) __attribute__((aligned(64))) x
-#define GC_ALIGNED128(x) __attribute__((aligned(128))) x
-#define GC_ALIGNED16_DECL(x) __attribute__((aligned(16))) x
-#define GC_ALIGNED64_DECL(x) __attribute__((aligned(64))) x
 #endif
 
-#ifdef _MSC_VER
-#define __getcwd _getcwd
-#define __chdir _chdir
-#else
-#define __getcwd getcwd
-#define __chdir chdir
-#endif
-
-#if !defined(__GNUC__) && (defined(_M_X64) || defined(_M_IX86))
+#if defined __SSE4_2__
 # define _M_SSE 0x402
-#else
-# if defined __SSE4_2__
-#  define _M_SSE 0x402
-# elif defined __SSE4_1__
-#  define _M_SSE 0x401
-# elif defined __SSSE3__
-#  define _M_SSE 0x301
-# elif defined __SSE3__
-#  define _M_SSE 0x300
-# elif defined __SSE2__
-#  define _M_SSE 0x200
-# endif
+#elif defined __SSE4_1__
+# define _M_SSE 0x401
+#elif defined __SSSE3__
+# define _M_SSE 0x301
+#elif defined __SSE3__
+# define _M_SSE 0x300
+#elif defined __SSE2__
+# define _M_SSE 0x200
+#elif !defined(__GNUC__) && (defined(_M_X64) || defined(_M_IX86))
+# define _M_SSE 0x402
 #endif
-
-#include "Swap.h"

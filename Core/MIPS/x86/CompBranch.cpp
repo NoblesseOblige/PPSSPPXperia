@@ -18,10 +18,12 @@
 #include "ppsspp_config.h"
 #if PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)
 
-#include "profiler/profiler.h"
+#include "Common/Data/Convert/SmallDataConvert.h"
+#include "Common/Profiler/Profiler.h"
 
-#include "Core/Reporting.h"
 #include "Core/Config.h"
+#include "Core/Core.h"
+#include "Core/Reporting.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/HLETables.h"
 #include "Core/Host.h"
@@ -45,8 +47,9 @@
 #define _SA MIPS_GET_SA(op)
 #define _POS  ((op>> 6) & 0x1F)
 #define _SIZE ((op>>11) & 0x1F)
-#define _IMM16 (signed short)(op & 0xFFFF)
 #define _IMM26 (op & 0x03FFFFFF)
+#define TARGET16 ((int)(SignExtend16ToU32(op) << 2))
+#define TARGET26 (_IMM26 << 2)
 
 #define LOOPOPTIMIZATION 0
 
@@ -77,11 +80,7 @@ namespace MIPSComp
 {
 using namespace Gen;
 
-static u32 intBranchExit;
-static u32 jitBranchExit;
-
-static void JitBranchLog(MIPSOpcode op, u32 pc)
-{
+static void JitBranchLog(MIPSOpcode op, u32 pc) {
 	currentMIPS->pc = pc;
 	currentMIPS->inDelaySlot = false;
 
@@ -91,15 +90,15 @@ static void JitBranchLog(MIPSOpcode op, u32 pc)
 
 	// Branch taken, use nextPC.
 	if (currentMIPS->inDelaySlot)
-		intBranchExit = currentMIPS->nextPC;
+		currentMIPS->intBranchExit = currentMIPS->nextPC;
 	else
 	{
 		// Branch not taken, likely delay slot skipped.
 		if (info & LIKELY)
-			intBranchExit = currentMIPS->pc;
+			currentMIPS->intBranchExit = currentMIPS->pc;
 		// Branch not taken, so increment over delay slot.
 		else
-			intBranchExit = currentMIPS->pc + 4;
+			currentMIPS->intBranchExit = currentMIPS->pc + 4;
 	}
 
 	currentMIPS->pc = pc;
@@ -110,7 +109,7 @@ static void JitBranchLogMismatch(MIPSOpcode op, u32 pc)
 {
 	char temp[256];
 	MIPSDisAsm(op, pc, temp, true);
-	ERROR_LOG(JIT, "Bad jump: %s - int:%08x jit:%08x", temp, intBranchExit, jitBranchExit);
+	ERROR_LOG(JIT, "Bad jump: %s - int:%08x jit:%08x", temp, currentMIPS->intBranchExit, currentMIPS->jitBranchExit);
 	host->SetDebugMode(true);
 }
 
@@ -124,14 +123,14 @@ void Jit::BranchLogExit(MIPSOpcode op, u32 dest, bool useEAX)
 {
 	OpArg destArg = useEAX ? R(EAX) : Imm32(dest);
 
-	CMP(32, M(&intBranchExit), destArg);
+	CMP(32, MIPSSTATE_VAR(intBranchExit), destArg);
 	FixupBranch skip = J_CC(CC_E);
 
-	MOV(32, M(&jitBranchExit), destArg);
+	MOV(32, MIPSSTATE_VAR(jitBranchExit), destArg);
 	ABI_CallFunctionCC(thunks.ProtectFunction(&JitBranchLogMismatch), op.encoding, GetCompilerPC());
 	// Restore EAX, we probably ruined it.
 	if (useEAX)
-		MOV(32, R(EAX), M(&jitBranchExit));
+		MOV(32, R(EAX), MIPSSTATE_VAR(jitBranchExit));
 
 	SetJumpTarget(skip);
 }
@@ -322,7 +321,7 @@ void Jit::BranchRSRTComp(MIPSOpcode op, Gen::CCFlags cc, bool likely)
 		ERROR_LOG_REPORT(JIT, "Branch in RSRTComp delay slot at %08x in block starting at %08x", GetCompilerPC(), js.blockStart);
 		return;
 	}
-	int offset = _IMM16 << 2;
+	int offset = TARGET16;
 	MIPSGPReg rt = _RT;
 	MIPSGPReg rs = _RS;
 	u32 targetAddr = GetCompilerPC() + offset + 4;
@@ -339,7 +338,7 @@ void Jit::BranchRSRTComp(MIPSOpcode op, Gen::CCFlags cc, bool likely)
 		{
 		case CC_E: immBranchNotTaken = rsImm == rtImm; break;
 		case CC_NE: immBranchNotTaken = rsImm != rtImm; break;
-		default: immBranchNotTaken = false; _dbg_assert_msg_(JIT, false, "Bad cc flag in BranchRSRTComp().");
+		default: immBranchNotTaken = false; _dbg_assert_msg_(false, "Bad cc flag in BranchRSRTComp().");
 		}
 		immBranch = true;
 		immBranchTaken = !immBranchNotTaken;
@@ -398,7 +397,7 @@ void Jit::BranchRSZeroComp(MIPSOpcode op, Gen::CCFlags cc, bool andLink, bool li
 		ERROR_LOG_REPORT(JIT, "Branch in RSZeroComp delay slot at %08x in block starting at %08x", GetCompilerPC(), js.blockStart);
 		return;
 	}
-	int offset = _IMM16 << 2;
+	int offset = TARGET16;
 	MIPSGPReg rs = _RS;
 	u32 targetAddr = GetCompilerPC() + offset + 4;
 
@@ -415,7 +414,7 @@ void Jit::BranchRSZeroComp(MIPSOpcode op, Gen::CCFlags cc, bool andLink, bool li
 		case CC_GE: immBranchNotTaken = imm >= 0; break;
 		case CC_L: immBranchNotTaken = imm < 0; break;
 		case CC_LE: immBranchNotTaken = imm <= 0; break;
-		default: immBranchNotTaken = false; _dbg_assert_msg_(JIT, false, "Bad cc flag in BranchRSZeroComp().");
+		default: immBranchNotTaken = false; _dbg_assert_msg_(false, "Bad cc flag in BranchRSZeroComp().");
 		}
 		immBranch = true;
 		immBranchTaken = !immBranchNotTaken;
@@ -482,7 +481,7 @@ void Jit::Comp_RelBranch(MIPSOpcode op)
 	case 23: BranchRSZeroComp(op, CC_LE, false, true); break;//bgtzl
 
 	default:
-		_dbg_assert_msg_(CPU,0,"Trying to compile instruction that can't be compiled");
+		_dbg_assert_msg_(false,"Trying to compile instruction that can't be compiled");
 		break;
 	}
 }
@@ -500,7 +499,7 @@ void Jit::Comp_RelBranchRI(MIPSOpcode op)
 	case 18: BranchRSZeroComp(op, CC_GE, true, true);  break; //R(MIPS_REG_RA) = PC + 8; if ((s32)R(rs) <  0) DelayBranchTo(addr); else SkipLikely(); break;//bltzall
 	case 19: BranchRSZeroComp(op, CC_L, true, true);   break; //R(MIPS_REG_RA) = PC + 8; if ((s32)R(rs) >= 0) DelayBranchTo(addr); else SkipLikely(); break;//bgezall
 	default:
-		_dbg_assert_msg_(CPU,0,"Trying to compile instruction that can't be compiled");
+		_dbg_assert_msg_(false,"Trying to compile instruction that can't be compiled");
 		break;
 	}
 }
@@ -514,7 +513,7 @@ void Jit::BranchFPFlag(MIPSOpcode op, Gen::CCFlags cc, bool likely)
 		ERROR_LOG_REPORT(JIT, "Branch in FPFlag delay slot at %08x in block starting at %08x", GetCompilerPC(), js.blockStart);
 		return;
 	}
-	int offset = _IMM16 << 2;
+	int offset = TARGET16;
 	u32 targetAddr = GetCompilerPC() + offset + 4;
 
 	MIPSOpcode delaySlotOp = GetOffsetInstruction(1);
@@ -539,7 +538,7 @@ void Jit::Comp_FPUBranch(MIPSOpcode op)
 	case 2: BranchFPFlag(op, CC_NZ, true);	break; //bc1fl
 	case 3: BranchFPFlag(op, CC_Z,	true);	break; //bc1tl
 	default:
-		_dbg_assert_msg_(CPU,0,"Trying to interpret instruction that can't be interpreted");
+		_dbg_assert_msg_(false,"Trying to interpret instruction that can't be interpreted");
 		break;
 	}
 }
@@ -549,10 +548,12 @@ void Jit::BranchVFPUFlag(MIPSOpcode op, Gen::CCFlags cc, bool likely)
 {
 	CONDITIONAL_LOG;
 	if (js.inDelaySlot) {
-		ERROR_LOG_REPORT(JIT, "Branch in VFPU delay slot at %08x in block starting at %08x", GetCompilerPC(), js.blockStart);
+		// I think we can safely just warn-log this without reporting, it's pretty clear that this type
+		// of branch is ignored.
+		WARN_LOG(JIT, "Branch in VFPU delay slot at %08x in block starting at %08x", GetCompilerPC(), js.blockStart);
 		return;
 	}
-	int offset = _IMM16 << 2;
+	int offset = TARGET16;
 	u32 targetAddr = GetCompilerPC() + offset + 4;
 
 	MIPSOpcode delaySlotOp = GetOffsetInstruction(1);
@@ -588,9 +589,13 @@ void Jit::Comp_VBranch(MIPSOpcode op)
 	case 2: BranchVFPUFlag(op, CC_NZ, true);	break; //bvfl
 	case 3: BranchVFPUFlag(op, CC_Z,	true);	break; //bvtl
 	default:
-		_dbg_assert_msg_(CPU,0,"Comp_VBranch: Invalid instruction");
+		_dbg_assert_msg_(false,"Comp_VBranch: Invalid instruction");
 		break;
 	}
+}
+
+static void HitInvalidJump(uint32_t dest) {
+	Core_ExecException(dest, currentMIPS->pc - 8, ExecExceptionType::JUMP);
 }
 
 void Jit::Comp_Jump(MIPSOpcode op) {
@@ -599,7 +604,7 @@ void Jit::Comp_Jump(MIPSOpcode op) {
 		ERROR_LOG_REPORT(JIT, "Branch in Jump delay slot at %08x in block starting at %08x", GetCompilerPC(), js.blockStart);
 		return;
 	}
-	u32 off = _IMM26 << 2;
+	u32 off = TARGET26;
 	u32 targetAddr = (GetCompilerPC() & 0xF0000000) | off;
 
 	// Might be a stubbed address or something?
@@ -610,6 +615,12 @@ void Jit::Comp_Jump(MIPSOpcode op) {
 			js.compiling = false;
 		}
 		// TODO: Mark this block dirty or something?  May be indication it will be changed by imports.
+
+		CompileDelaySlot(DELAYSLOT_NICE);
+		FlushAll();
+		MOV(32, MIPSSTATE_VAR(pc), Imm32(GetCompilerPC() + 8));
+		ABI_CallFunctionC(&HitInvalidJump, targetAddr);
+		WriteSyscallExit();
 		return;
 	}
 
@@ -656,13 +667,11 @@ void Jit::Comp_Jump(MIPSOpcode op) {
 		break;
 
 	default:
-		_dbg_assert_msg_(CPU,0,"Trying to compile instruction that can't be compiled");
+		_dbg_assert_msg_(false,"Trying to compile instruction that can't be compiled");
 		break;
 	}
 	js.compiling = false;
 }
-
-static u32 savedPC;
 
 void Jit::Comp_JumpReg(MIPSOpcode op)
 {
@@ -686,13 +695,13 @@ void Jit::Comp_JumpReg(MIPSOpcode op)
 	{
 		// If this is a syscall, write the pc (for thread switching and other good reasons.)
 		gpr.MapReg(rs, true, false);
-		MOV(32, M(&mips_->pc), gpr.R(rs));
+		MOV(32, MIPSSTATE_VAR(pc), gpr.R(rs));
 		if (andLink)
 			gpr.SetImm(rd, GetCompilerPC() + 8);
 		CompileDelaySlot(DELAYSLOT_FLUSH);
 
 		// Syscalls write the exit code for us.
-		_dbg_assert_msg_(JIT, !js.compiling, "Expected syscall to write an exit code.");
+		_dbg_assert_msg_(!js.compiling, "Expected syscall to write an exit code.");
 		return;
 	}
 	else if (delaySlotIsNice)
@@ -729,27 +738,24 @@ void Jit::Comp_JumpReg(MIPSOpcode op)
 			MOV(32, R(EAX), gpr.R(rs));
 		}
 		FlushAll();
-	}
-	else
-	{
+	} else {
 		// Latch destination now - save it in memory.
 		gpr.MapReg(rs, true, false);
-		MOV(32, M(&savedPC), gpr.R(rs));
+		MOV(32, MIPSSTATE_VAR(savedPC), gpr.R(rs));
 		if (andLink)
 			gpr.SetImm(rd, GetCompilerPC() + 8);
 		CompileDelaySlot(DELAYSLOT_NICE);
-		MOV(32, R(EAX), M(&savedPC));
+		MOV(32, R(EAX), MIPSSTATE_VAR(savedPC));
 		FlushAll();
 	}
 
-	switch (op & 0x3f)
-	{
+	switch (op & 0x3f) {
 	case 8: //jr
 		break;
 	case 9: //jalr
 		break;
 	default:
-		_dbg_assert_msg_(CPU,0,"Trying to compile instruction that can't be compiled");
+		_dbg_assert_msg_(false,"Trying to compile instruction that can't be compiled");
 		break;
 	}
 
@@ -760,6 +766,10 @@ void Jit::Comp_JumpReg(MIPSOpcode op)
 
 void Jit::Comp_Syscall(MIPSOpcode op)
 {
+	if (op.encoding == 0x03FFFFcc) {
+		WARN_LOG(JIT, "Encountered bad syscall instruction at %08x (%08x)", js.compilerPC, op.encoding);
+	}
+
 	if (!g_Config.bSkipDeadbeefFilling)
 	{
 		// All of these will be overwritten with DEADBEEF anyway.
@@ -783,6 +793,10 @@ void Jit::Comp_Syscall(MIPSOpcode op)
 	RestoreRoundingMode();
 	js.downcountAmount = -offset;
 
+	if (!js.inDelaySlot) {
+		MOV(32, MIPSSTATE_VAR(pc), Imm32(GetCompilerPC() + 4));
+	}
+
 #ifdef USE_PROFILER
 	// When profiling, we can't skip CallSyscall, since it times syscalls.
 	ABI_CallFunctionC(&CallSyscall, op.encoding);
@@ -790,7 +804,7 @@ void Jit::Comp_Syscall(MIPSOpcode op)
 	// Skip the CallSyscall where possible.
 	void *quickFunc = GetQuickSyscallFunc(op);
 	if (quickFunc)
-		ABI_CallFunctionP(quickFunc, (void *)GetSyscallInfo(op));
+		ABI_CallFunctionP(quickFunc, (void *)GetSyscallFuncPointer(op));
 	else
 		ABI_CallFunctionC(&CallSyscall, op.encoding);
 #endif

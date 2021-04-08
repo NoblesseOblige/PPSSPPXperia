@@ -19,30 +19,18 @@
 
 #include "Common/CommonWindows.h"
 #include "GPU/Common/GPUDebugInterface.h"
-#include "Globals.h"
+#include "GPU/Debugger/Debugger.h"
 #include "Windows/resource.h"
 #include "Windows/W32Util/DialogManager.h"
 #include "Windows/W32Util/TabControl.h"
 #include "Windows/GEDebugger/SimpleGLWindow.h"
 
 enum {
-	WM_GEDBG_BREAK_CMD = WM_USER + 200,
-	WM_GEDBG_BREAK_DRAW,
-	WM_GEDBG_STEPDISPLAYLIST,
+	WM_GEDBG_STEPDISPLAYLIST = WM_USER + 200,
 	WM_GEDBG_TOGGLEPCBREAKPOINT,
 	WM_GEDBG_RUNTOWPARAM,
 	WM_GEDBG_SETCMDWPARAM,
 	WM_GEDBG_UPDATE_WATCH,
-};
-
-enum BreakNextType {
-	BREAK_NONE,
-	BREAK_NEXT_OP,
-	BREAK_NEXT_DRAW,
-	BREAK_NEXT_TEX,
-	BREAK_NEXT_NONTEX,
-	BREAK_NEXT_FRAME,
-	BREAK_NEXT_PRIM,
 };
 
 class CtrlDisplayListView;
@@ -55,6 +43,16 @@ class TabVertices;
 class TabMatrices;
 class TabStateWatch;
 struct GPUgstate;
+
+class StepCountDlg : public Dialog {
+public:
+	StepCountDlg(HINSTANCE _hInstance, HWND _hParent);
+	~StepCountDlg();
+protected:
+	BOOL DlgProc(UINT message, WPARAM wParam, LPARAM lParam);
+private:
+	void Jump(int count, bool relative);
+};
 
 class CGEDebugger : public Dialog {
 public:
@@ -71,41 +69,47 @@ private:
 	void UpdatePreviews();
 	void UpdatePrimaryPreview(const GPUgstate &state);
 	void UpdateSecondPreview(const GPUgstate &state);
-	void UpdatePrimPreview(u32 op);
+	u32 PrimPreviewOp();
+	void UpdatePrimPreview(u32 op, int which);
 	void CleanupPrimPreview();
+	void HandleRedraw(int which);
 	void UpdateSize(WORD width, WORD height);
 	void SavePosition();
-	void SetBreakNext(BreakNextType type);
 	void UpdateTextureLevel(int level);
-	void DescribePrimaryPreview(const GPUgstate &state, wchar_t desc[256]);
-	void DescribeSecondPreview(const GPUgstate &state, wchar_t desc[256]);
+	void DescribePrimaryPreview(const GPUgstate &state, char desc[256]);
+	void DescribeSecondPreview(const GPUgstate &state, char desc[256]);
 	void PrimaryPreviewHover(int x, int y);
 	void SecondPreviewHover(int x, int y);
-	void DescribePixel(u32 pix, GPUDebugBufferFormat fmt, int x, int y, wchar_t desc[256]);
-	void DescribePixelRGBA(u32 pix, GPUDebugBufferFormat fmt, int x, int y, wchar_t desc[256]);
+	void PreviewExport(const GPUDebugBuffer *buffer);
+	void DescribePixel(u32 pix, GPUDebugBufferFormat fmt, int x, int y, char desc[256]);
+	void DescribePixelRGBA(u32 pix, GPUDebugBufferFormat fmt, int x, int y, char desc[256]);
 
 	u32 TexturePreviewFlags(const GPUgstate &state);
 
-	CtrlDisplayListView *displayList;
-	TabDisplayLists *lists;
-	TabStateFlags *flags;
-	TabStateLighting *lighting;
-	TabStateTexture *textureState;
-	TabStateSettings *settings;
-	TabVertices *vertices;
-	TabMatrices *matrices;
-	SimpleGLWindow *primaryWindow;
-	SimpleGLWindow *secondWindow;
-	TabStateWatch *watch;
-	TabControl *tabs;
-	TabControl *fbTabs;
-	int textureLevel_;
-	bool showClut_;
-	bool forceOpaque_;
+	CtrlDisplayListView *displayList = nullptr;
+	TabDisplayLists *lists = nullptr;
+	TabStateFlags *flags = nullptr;
+	TabStateLighting *lighting = nullptr;
+	TabStateTexture *textureState = nullptr;
+	TabStateSettings *settings = nullptr;
+	TabVertices *vertices = nullptr;
+	TabMatrices *matrices = nullptr;
+	SimpleGLWindow *primaryWindow = nullptr;
+	SimpleGLWindow *secondWindow = nullptr;
+	TabStateWatch *watch = nullptr;
+	TabControl *tabs = nullptr;
+	TabControl *fbTabs = nullptr;
+	int textureLevel_ = 0;
+	bool showClut_ = false;
+	bool forceOpaque_ = false;
 	// The most recent primary/framebuffer and texture buffers.
-	const GPUDebugBuffer *primaryBuffer_;
-	const GPUDebugBuffer *secondBuffer_;
+	const GPUDebugBuffer *primaryBuffer_ = nullptr;
+	const GPUDebugBuffer *secondBuffer_ = nullptr;
 
+	bool updating_ = false;
+	int previewsEnabled_ = 3;
 	int minWidth_;
 	int minHeight_;
+
+	StepCountDlg stepCountDlg;
 };

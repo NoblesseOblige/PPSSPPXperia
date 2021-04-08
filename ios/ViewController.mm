@@ -5,23 +5,36 @@
 // Modified by xSacha
 //
 
+#import "AppDelegate.h"
 #import "ViewController.h"
-#import "AudioEngine.h"
+#import "DisplayManager.h"
+#import "SubtleVolume.h"
 #import <GLKit/GLKit.h>
+#include <cassert>
 
-#include "base/display.h"
-#include "base/timeutil.h"
-#include "file/zip_read.h"
-#include "input/input_state.h"
-#include "net/resolve.h"
-#include "ui/screen.h"
-#include "thin3d/thin3d.h"
-#include "input/keycodes.h"
-#include "gfx_es2/gpu_features.h"
+#include "Common/Net/Resolve.h"
+#include "Common/UI/Screen.h"
+#include "Common/GPU/thin3d.h"
+#include "Common/GPU/thin3d_create.h"
+#include "Common/GPU/OpenGL/GLRenderManager.h"
+#include "Common/GPU/OpenGL/GLFeatures.h"
+
+#include "Common/System/Display.h"
+#include "Common/System/System.h"
+#include "Common/System/NativeApp.h"
+#include "Common/File/VFS/VFS.h"
+#include "Common/Log.h"
+#include "Common/TimeUtil.h"
+#include "Common/Input/InputState.h"
+#include "Common/Input/KeyCodes.h"
+#include "Common/GraphicsContext.h"
 
 #include "Core/Config.h"
-#include "Common/GraphicsContext.h"
-#include "GPU/GLES/FBO.h"
+#include "Core/ConfigValues.h"
+#include "Core/System.h"
+#include "Core/HLE/sceUsbCam.h"
+#include "Core/HLE/sceUsbGps.h"
+#include "Core/Host.h"
 
 #include <sys/types.h>
 #include <sys/sysctl.h>
@@ -30,92 +43,92 @@
 #define IS_IPAD() ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad)
 #define IS_IPHONE() ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPhone)
 
-#ifndef kCFCoreFoundationVersionNumber_IOS_9_0
-#define kCFCoreFoundationVersionNumber_IOS_9_0 1240.10
-#endif
-
-class IOSDummyGraphicsContext : public DummyGraphicsContext {
+class IOSGraphicsContext : public GraphicsContext {
 public:
-    Draw::DrawContext *CreateThin3DContext() override {
-        CheckGLExtensions();
-        return Draw::T3DCreateGLContext();
-    }
+	IOSGraphicsContext() {
+		CheckGLExtensions();
+		draw_ = Draw::T3DCreateGLContext();
+		renderManager_ = (GLRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
+		renderManager_->SetInflightFrames(g_Config.iInflightFrames);
+		SetGPUBackend(GPUBackend::OPENGL);
+		bool success = draw_->CreatePresets();
+		_assert_msg_(success, "Failed to compile preset shaders");
+	}
+	~IOSGraphicsContext() {
+		delete draw_;
+	}
+	Draw::DrawContext *GetDrawContext() override {
+		return draw_;
+	}
+
+	void SwapInterval(int interval) override {}
+	void SwapBuffers() override {}
+	void Resize() override {}
+	void Shutdown() override {}
+
+	void ThreadStart() override {
+		renderManager_->ThreadStart(draw_);
+	}
+
+	bool ThreadFrame() override {
+		return renderManager_->ThreadFrame();
+	}
+
+	void ThreadEnd() override {
+		renderManager_->ThreadEnd();
+	}
+
+	void StopThread() override {
+		renderManager_->WaitUntilQueueIdle();
+		renderManager_->StopThread();
+	}
+
+private:
+	Draw::DrawContext *draw_;
+	GLRenderManager *renderManager_;
 };
 
-float dp_xscale = 1.0f;
-float dp_yscale = 1.0f;
+static float dp_xscale = 1.0f;
+static float dp_yscale = 1.0f;
 
-double lastSelectPress = 0.0f;
-double lastStartPress = 0.0f;
-bool simulateAnalog = false;
+static double lastSelectPress = 0.0f;
+static double lastStartPress = 0.0f;
+static bool simulateAnalog = false;
+static bool threadEnabled = true;
+static bool threadStopped = false;
+static UITouch *g_touches[10];
 
-extern ScreenManager *screenManager;
-InputState input_state;
-
-extern std::string ram_temp_file;
-extern bool iosCanUseJit;
-extern bool targetIsJailbroken;
-
-ViewController* sharedViewController;
+__unsafe_unretained ViewController* sharedViewController;
 static GraphicsContext *graphicsContext;
+static CameraHelper *cameraHelper;
+static LocationHelper *locationHelper;
 
-@interface ViewController ()
-{
+@interface ViewController () {
 	std::map<uint16_t, uint16_t> iCadeToKeyMap;
 }
 
-@property (nonatomic) EAGLContext* context;
-@property (nonatomic) NSString* documentsPath;
-@property (nonatomic) NSString* bundlePath;
-@property (nonatomic) NSMutableArray* touches;
-@property (nonatomic) AudioEngine* audioEngine;
-@property (nonatomic) iCadeReaderView* iCadeView;
+@property (nonatomic, strong) EAGLContext* context;
+
+//@property (nonatomic) iCadeReaderView* iCadeView;
 #if __IPHONE_OS_VERSION_MAX_ALLOWED > __IPHONE_6_1
 @property (nonatomic) GCController *gameController __attribute__((weak_import));
 #endif
 
 @end
 
-@implementation ViewController
--(bool) isArm64 {
-	size_t size;
-	cpu_type_t type;
-	size = sizeof(type);
-	sysctlbyname("hw.cputype", &type, &size, NULL, 0);
-	return type == CPU_TYPE_ARM64;
+@interface ViewController () <SubtleVolumeDelegate> {
+	SubtleVolume *volume;
 }
+@end
+
+
+@implementation ViewController
 
 -(id) init {
 	self = [super init];
 	if (self) {
 		sharedViewController = self;
-		self.touches = [NSMutableArray array];
-		self.documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
-		self.bundlePath = [[[NSBundle mainBundle] resourcePath] stringByAppendingString:@"/assets/"];
-
-		memset(&input_state, 0, sizeof(input_state));
-
-		net::Init();
-
-		ram_temp_file = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"ram_tmp.file"] fileSystemRepresentation];
-		
-		iosCanUseJit = true;
-		targetIsJailbroken = false;
-		NSArray *jailPath = [NSArray arrayWithObjects:
-							@"/Applications/Cydia.app",
-							@"/private/var/lib/apt",
-							@"/private/var/stash",
-							@"/usr/sbin/sshd",
-							@"/usr/bin/sshd", nil];
-
-		for (NSString *string in jailPath) {
-			if ([[NSFileManager defaultManager] fileExistsAtPath:string]) {
-				// checking device jailbreak status in order to determine which message to show in GameSettingsScreen
-				targetIsJailbroken = true;
-			}
-		}
-		
-		NativeInit(0, NULL, [self.documentsPath UTF8String], [self.bundlePath UTF8String], NULL);
+		memset(g_touches, 0, sizeof(g_touches));
 
 		iCadeToKeyMap[iCadeJoystickUp]		= NKCODE_DPAD_UP;
 		iCadeToKeyMap[iCadeJoystickRight]	= NKCODE_DPAD_RIGHT;
@@ -130,6 +143,8 @@ static GraphicsContext *graphicsContext;
 		iCadeToKeyMap[iCadeButtonG]			= NKCODE_BUTTON_1; // Triangle
 		iCadeToKeyMap[iCadeButtonH]			= NKCODE_BUTTON_3; // Circle
 
+		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appWillTerminate:) name:UIApplicationWillTerminateNotification object:nil];
+
 #if __IPHONE_OS_VERSION_MAX_ALLOWED > __IPHONE_6_1
 		if ([GCController class]) // Checking the availability of a GameController framework
 		{
@@ -141,10 +156,37 @@ static GraphicsContext *graphicsContext;
 	return self;
 }
 
+- (void)subtleVolume:(SubtleVolume *)volumeView willChange:(CGFloat)value {
+}
+- (void)subtleVolume:(SubtleVolume *)volumeView didChange:(CGFloat)value {
+}
+
+- (void)shareText:(NSString *)text {
+	NSArray *items = @[text];
+	UIActivityViewController * viewController = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[self presentViewController:viewController animated:YES completion:nil];
+	});
+}
+
+- (void)viewSafeAreaInsetsDidChange {
+	if (@available(iOS 11.0, *)) {
+		[super viewSafeAreaInsetsDidChange];
+		char safeArea[100];
+		// we use 0.0f instead of safeAreaInsets.bottom because the bottom overlay isn't disturbing (for now)
+		snprintf(safeArea, sizeof(safeArea), "%f:%f:%f:%f",
+				self.view.safeAreaInsets.left, self.view.safeAreaInsets.right,
+				self.view.safeAreaInsets.top, 0.0f);
+		System_SendMessage("safe_insets", safeArea);
+	}
+}
+
 - (void)viewDidLoad {
 	[super viewDidLoad];
+	[[DisplayManager shared] setupDisplayListener];
 
-	self.view.frame = [[UIScreen mainScreen] bounds];
+	UIScreen* screen = [(AppDelegate*)[UIApplication sharedApplication].delegate screen];
+	self.view.frame = [screen bounds];
 	self.view.multipleTouchEnabled = YES;
 	self.context = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
 	
@@ -155,47 +197,27 @@ static GraphicsContext *graphicsContext;
 	GLKView* view = (GLKView *)self.view;
 	view.context = self.context;
 	view.drawableDepthFormat = GLKViewDrawableDepthFormat24;
+	view.drawableStencilFormat = GLKViewDrawableStencilFormat8;
 	[EAGLContext setCurrentContext:self.context];
 	self.preferredFramesPerSecond = 60;
 
-	// Might be useful for a speed boot, sacrificing resolution:
-	// view.contentScaleFactor = 1.0;
+	[[DisplayManager shared] updateResolution:[UIScreen mainScreen]];
 
-	float scale = [UIScreen mainScreen].scale;
+	graphicsContext = new IOSGraphicsContext();
 	
-	if ([[UIScreen mainScreen] respondsToSelector:@selector(nativeScale)]) {
-		scale = [UIScreen mainScreen].nativeScale;
-	}
+	graphicsContext->GetDrawContext()->SetErrorCallback([](const char *shortDesc, const char *details, void *userdata) {
+		host->NotifyUserMessage(details, 5.0, 0xFFFFFFFF, "error_callback");
+	}, nullptr);
 
-	CGSize size = [[UIApplication sharedApplication].delegate window].frame.size;
-
-	if (size.height > size.width) {
-		float h = size.height;
-		size.height = size.width;
-		size.width = h;
-	}
-
-	g_dpi = (IS_IPAD() ? 200 : 150) * scale;
-	g_dpi_scale = 240.0f / (float)g_dpi;
-	pixel_xres = size.width * scale;
-	pixel_yres = size.height * scale;
-
-	dp_xres = pixel_xres * g_dpi_scale;
-	dp_yres = pixel_yres * g_dpi_scale;
-
-	pixel_in_dps = (float)pixel_xres / (float)dp_xres;
-
-	graphicsContext = new IOSDummyGraphicsContext();
-
-	NativeInitGraphics(graphicsContext);
+	graphicsContext->ThreadStart();
 
 	dp_xscale = (float)dp_xres / (float)pixel_xres;
 	dp_yscale = (float)dp_yres / (float)pixel_yres;
 	
-	self.iCadeView = [[iCadeReaderView alloc] init];
+	/*self.iCadeView = [[iCadeReaderView alloc] init];
 	[self.view addSubview:self.iCadeView];
 	self.iCadeView.delegate = self;
-	self.iCadeView.active = YES;
+	self.iCadeView.active = YES;*/
 	
 #if __IPHONE_OS_VERSION_MAX_ALLOWED > __IPHONE_6_1
 	if ([GCController class]) {
@@ -204,16 +226,51 @@ static GraphicsContext *graphicsContext;
 		}
 	}
 #endif
-}
+	
+	CGFloat margin = 0;
+	CGFloat height = 16;
+	volume = [[SubtleVolume alloc]
+			  initWithStyle:SubtleVolumeStylePlain
+			  frame:CGRectMake(
+							   margin,   // X
+							   0,        // Y
+							   self.view.frame.size.width-(margin*2), // width
+							   height    // height
+							)];
+	
+	volume.padding = 7;
+	volume.barTintColor = [UIColor blackColor];
+	volume.barBackgroundColor = [UIColor whiteColor];
+	volume.animation = SubtleVolumeAnimationSlideDown;
+	volume.delegate = self;
+	[self.view addSubview:volume];
+	[self.view bringSubviewToFront:volume];
 
-- (void)viewDidUnload
-{
-	[super viewDidUnload];
+	cameraHelper = [[CameraHelper alloc] init];
+	[cameraHelper setDelegate:self];
 
-	if ([EAGLContext currentContext] == self.context) {
-		[EAGLContext setCurrentContext:nil];
-	}
-	self.context = nil;
+	locationHelper = [[LocationHelper alloc] init];
+	[locationHelper setDelegate:self];
+	
+	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+		NativeInitGraphics(graphicsContext);
+
+		INFO_LOG(SYSTEM, "Emulation thread starting\n");
+		while (threadEnabled) {
+			NativeUpdate();
+			NativeRender(graphicsContext);
+		}
+
+
+		INFO_LOG(SYSTEM, "Emulation thread shutting down\n");
+		NativeShutdownGraphics();
+
+		// Also ask the main thread to stop, so it doesn't hang waiting for a new frame.
+		INFO_LOG(SYSTEM, "Emulation thread stopping\n");
+		graphicsContext->StopThread();
+		
+		threadStopped = true;
+	});
 }
 
 - (void)didReceiveMemoryWarning
@@ -221,22 +278,62 @@ static GraphicsContext *graphicsContext;
 	[super didReceiveMemoryWarning];
 }
 
-- (void)dealloc
+- (void)appWillTerminate:(NSNotification *)notification
 {
-	[self viewDidUnload];
+	[self shutdown];
+}
+
+- (void)shutdown
+{
+	if (sharedViewController == nil) {
+		return;
+	}
+	
+	if(volume) {
+		[volume removeFromSuperview];
+		volume = nil;
+	}
+
+	Audio_Shutdown();
+
+	if (threadEnabled) {
+		threadEnabled = false;
+		while (graphicsContext->ThreadFrame()) {
+			continue;
+		}
+		while (!threadStopped) {}
+		graphicsContext->ThreadEnd();
+	}
+
+	sharedViewController = nil;
+
+	if (self.context) {
+		if ([EAGLContext currentContext] == self.context) {
+			[EAGLContext setCurrentContext:nil];
+		}
+		self.context = nil;
+	}
+
+	[[NSNotificationCenter defaultCenter] removeObserver:self];
 
 #if __IPHONE_OS_VERSION_MAX_ALLOWED > __IPHONE_6_1
 	if ([GCController class]) {
-		[[NSNotificationCenter defaultCenter] removeObserver:self name:GCControllerDidConnectNotification object:nil];
-		[[NSNotificationCenter defaultCenter] removeObserver:self name:GCControllerDidDisconnectNotification object:nil];
 		self.gameController = nil;
 	}
 #endif
-	NativeShutdownGraphics();
-	graphicsContext->Shutdown();
-	delete graphicsContext;
-	graphicsContext = NULL;
+
+	if (graphicsContext) {
+		graphicsContext->Shutdown();
+		delete graphicsContext;
+		graphicsContext = NULL;
+	}
+
 	NativeShutdown();
+}
+
+- (void)dealloc
+{
+	[self shutdown];
 }
 
 // For iOS before 6.0
@@ -253,21 +350,12 @@ static GraphicsContext *graphicsContext;
 
 - (void)glkView:(GLKView *)view drawInRect:(CGRect)rect
 {
-	{
-		lock_guard guard(input_state.lock);
-		UpdateInputState(&input_state);
-		NativeUpdate(input_state);
-		EndInputState(&input_state);
-	}
-
-	NativeRender(graphicsContext);
-	time_update();
+	if (sharedViewController)
+		graphicsContext->ThreadFrame();
 }
 
 - (void)touchX:(float)x y:(float)y code:(int)code pointerId:(int)pointerId
 {
-	lock_guard guard(input_state.lock);
-
 	float scale = [UIScreen mainScreen].scale;
 	
 	if ([[UIScreen mainScreen] respondsToSelector:@selector(nativeScale)]) {
@@ -278,19 +366,14 @@ static GraphicsContext *graphicsContext;
 	float scaledY = (int)(y * dp_yscale) * scale;
 
 	TouchInput input;
-
-	input_state.pointer_x[pointerId] = scaledX;
-	input_state.pointer_y[pointerId] = scaledY;
 	input.x = scaledX;
 	input.y = scaledY;
 	switch (code) {
 		case 1 :
-			input_state.pointer_down[pointerId] = true;
 			input.flags = TOUCH_DOWN;
 			break;
 
 		case 2 :
-			input_state.pointer_down[pointerId] = false;
 			input.flags = TOUCH_UP;
 			break;
 
@@ -298,42 +381,42 @@ static GraphicsContext *graphicsContext;
 			input.flags = TOUCH_MOVE;
 			break;
 	}
-	input_state.mouse_valid = true;
 	input.id = pointerId;
 	NativeTouch(input);
 }
 
-- (NSDictionary*)touchDictBy:(UITouch*)touch
-{
-	for (NSDictionary* dict in self.touches) {
-		if ([dict objectForKey:@"touch"] == touch)
-			return dict;
-	}
-	return nil;
-}
-
-- (int)freeTouchIndex
-{
-	int index = 0;
-
-	for (NSDictionary* dict in self.touches)
-	{
-		int i = [[dict objectForKey:@"index"] intValue];
-		if (index == i)
-			index = i+1;
+int ToTouchID(UITouch *uiTouch, bool allowAllocate) {
+	// Find the id for the touch.  Avoid 0 (mouse.)
+	for (int localId = 1; localId < (int)ARRAY_SIZE(g_touches); ++localId) {
+		if (g_touches[localId] == uiTouch) {
+			return localId;
+		}
 	}
 
-	return index;
+	// Allocate a new one, perhaps?
+	if (allowAllocate) {
+		for (int localId = 1; localId < (int)ARRAY_SIZE(g_touches); ++localId) {
+			if (g_touches[localId] == 0) {
+				g_touches[localId] = uiTouch;
+				return localId;
+			}
+		}
+
+		// None were free. Ignore?
+		return 0;
+	}
+
+	return -1;
 }
+
 
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event
 {
 	for(UITouch* touch in touches)
 	{
-		NSDictionary* dict = @{@"touch":touch,@"index":@([self freeTouchIndex])};
-		[self.touches addObject:dict];
 		CGPoint point = [touch locationInView:self.view];
-		[self touchX:point.x y:point.y code:1 pointerId:[[dict objectForKey:@"index"] intValue]];
+		int touchId = ToTouchID(touch, true);
+		[self touchX:point.x y:point.y code:1 pointerId:touchId];
 	}
 }
 
@@ -342,8 +425,8 @@ static GraphicsContext *graphicsContext;
 	for(UITouch* touch in touches)
 	{
 		CGPoint point = [touch locationInView:self.view];
-		NSDictionary* dict = [self touchDictBy:touch];
-		[self touchX:point.x y:point.y code:0 pointerId:[[dict objectForKey:@"index"] intValue]];
+		int touchId = ToTouchID(touch, true);
+		[self touchX:point.x y:point.y code:0 pointerId: touchId];
 	}
 }
 
@@ -352,9 +435,24 @@ static GraphicsContext *graphicsContext;
 	for(UITouch* touch in touches)
 	{
 		CGPoint point = [touch locationInView:self.view];
-		NSDictionary* dict = [self touchDictBy:touch];
-		[self touchX:point.x y:point.y code:2 pointerId:[[dict objectForKey:@"index"] intValue]];
-		[self.touches removeObject:dict];
+		int touchId = ToTouchID(touch, false);
+		if (touchId >= 0) {
+			[self touchX:point.x y:point.y code:2 pointerId: touchId];
+			g_touches[touchId] = nullptr;
+		}
+	}
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
+{
+	for(UITouch* touch in touches)
+	{
+		CGPoint point = [touch locationInView:self.view];
+		int touchId = ToTouchID(touch, false);
+		if (touchId >= 0) {
+			[self touchX:point.x y:point.y code:2 pointerId: touchId];
+			g_touches[touchId] = nullptr;
+		}
 	}
 }
 
@@ -505,6 +603,12 @@ static GraphicsContext *graphicsContext;
 	NativeKey(key);
 }
 
+// Enables tapping for edge area.
+-(UIRectEdge)preferredScreenEdgesDeferringSystemGestures
+{
+	return UIRectEdgeAll;
+}
+
 - (void)setupController:(GCController *)controller
 {
 	self.gameController = controller;
@@ -576,13 +680,45 @@ static GraphicsContext *graphicsContext;
 	extendedProfile.rightTrigger.valueChangedHandler = ^(GCControllerButtonInput *button, float value, BOOL pressed) {
 		[self controllerButtonPressed:pressed keyCode:NKCODE_BUTTON_10]; // Start
 	};
+
+#if defined(__IPHONE_12_1) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_12_1
+	if (extendedProfile.leftThumbstickButton != nil) {
+		extendedProfile.leftThumbstickButton.valueChangedHandler = ^(GCControllerButtonInput *button, float value, BOOL pressed) {
+			[self controllerButtonPressed:pressed keyCode:NKCODE_BUTTON_11];
+		};
+	}
+	if (extendedProfile.rightThumbstickButton != nil) {
+		extendedProfile.rightThumbstickButton.valueChangedHandler = ^(GCControllerButtonInput *button, float value, BOOL pressed) {
+			[self controllerButtonPressed:pressed keyCode:NKCODE_BUTTON_12];
+		};
+	}
+#endif
+#if defined(__IPHONE_13_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_13_0
+	if (extendedProfile.buttonOptions != nil) {
+		extendedProfile.buttonOptions.valueChangedHandler = ^(GCControllerButtonInput *button, float value, BOOL pressed) {
+			[self controllerButtonPressed:pressed keyCode:NKCODE_BUTTON_13];
+		};
+	}
+	if (extendedProfile.buttonMenu != nil) {
+		extendedProfile.buttonMenu.valueChangedHandler = ^(GCControllerButtonInput *button, float value, BOOL pressed) {
+			[self controllerButtonPressed:pressed keyCode:NKCODE_BUTTON_14];
+		};
+	}
+#endif
+#if defined(__IPHONE_14_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_14_0
+	if (extendedProfile.buttonHome != nil) {
+		extendedProfile.buttonHome.valueChangedHandler = ^(GCControllerButtonInput *button, float value, BOOL pressed) {
+			[self controllerButtonPressed:pressed keyCode:NKCODE_BUTTON_15];
+		};
+	}
+#endif
 	
 	extendedProfile.leftThumbstick.xAxis.valueChangedHandler = ^(GCControllerAxisInput *axis, float value) {
 		AxisInput axisInput;
 		axisInput.deviceId = DEVICE_ID_PAD_0;
 		axisInput.flags = 0;
 		axisInput.axisId = JOYSTICK_AXIS_X;
-		axisInput.value = value;
+		axisInput.value = value * g_Config.fXInputAnalogSensitivity;
 		NativeAxis(axisInput);
 	};
 	
@@ -591,7 +727,7 @@ static GraphicsContext *graphicsContext;
 		axisInput.deviceId = DEVICE_ID_PAD_0;
 		axisInput.flags = 0;
 		axisInput.axisId = JOYSTICK_AXIS_Y;
-		axisInput.value = -value;
+		axisInput.value = -value * g_Config.fXInputAnalogSensitivity;
 		NativeAxis(axisInput);
 	};
 	
@@ -601,7 +737,7 @@ static GraphicsContext *graphicsContext;
 		axisInput.deviceId = DEVICE_ID_PAD_0;
 		axisInput.flags = 0;
 		axisInput.axisId = JOYSTICK_AXIS_Z;
-		axisInput.value = value;
+		axisInput.value = value * g_Config.fXInputAnalogSensitivity;
 		NativeAxis(axisInput);
 	};
 	
@@ -610,13 +746,50 @@ static GraphicsContext *graphicsContext;
 		axisInput.deviceId = DEVICE_ID_PAD_0;
 		axisInput.flags = 0;
 		axisInput.axisId = JOYSTICK_AXIS_RZ;
-		axisInput.value = -value;
+		axisInput.value = -value * g_Config.fXInputAnalogSensitivity;
 		NativeAxis(axisInput);
 	};
 }
 #endif
 
+void setCameraSize(int width, int height) {
+	[cameraHelper setCameraSize: width h:height];
+}
+
+void startVideo() {
+	[cameraHelper startVideo];
+}
+
+void stopVideo() {
+	[cameraHelper stopVideo];
+}
+
+-(void) PushCameraImageIOS:(long long)len buffer:(unsigned char*)data {
+	Camera::pushCameraImage(len, data);
+}
+
+void startLocation() {
+	[locationHelper startLocationUpdates];
+}
+
+void stopLocation() {
+	[locationHelper stopLocationUpdates];
+}
+
+-(void) SetGpsDataIOS:(CLLocation *)newLocation {
+	GPS::setGpsData((long long)newLocation.timestamp.timeIntervalSince1970,
+					newLocation.horizontalAccuracy/5.0,
+					newLocation.coordinate.latitude, newLocation.coordinate.longitude,
+					newLocation.altitude,
+					MAX(newLocation.speed * 3.6, 0.0), /* m/s to km/h */
+					0 /* bearing */);
+}
+
 @end
+
+void OpenDirectory(const char *path) {
+	// Unsupported
+}
 
 void LaunchBrowser(char const* url)
 {

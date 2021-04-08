@@ -15,34 +15,57 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include <stdio.h>
+#include <cstdio>
 
+#include "Common/GPU/OpenGL/GLFeatures.h"
+
+#include "GPU/Common/ShaderId.h"
+#include "GPU/Common/ShaderCommon.h"
+#include "Common/StringUtils.h"
 #include "Common/Log.h"
 #include "Core/Reporting.h"
 #include "GPU/GPUState.h"
-#include "GPU/GLES/GLStateCache.h"
 #include "GPU/Common/DepalettizeShaderCommon.h"
 
-
 #define WRITE p+=sprintf
+
+// TODO: Add a compute shader path. Complete waste of time to set up a graphics state.
 
 // Uses integer instructions available since OpenGL 3.0. Suitable for ES 3.0 as well.
 void GenerateDepalShader300(char *buffer, GEBufferFormat pixelFormat, ShaderLanguage language) {
 	char *p = buffer;
-	if (language == GLSL_VULKAN) {
-		WRITE(p, "#version 140\n");
+	if (language == HLSL_D3D11) {
+		WRITE(p, "SamplerState texSamp : register(s0);\n");
+		WRITE(p, "Texture2D<float4> tex : register(t0);\n");
+		WRITE(p, "Texture2D<float4> pal : register(t3);\n");
+		// Support for depth.
+		if (pixelFormat == GE_FORMAT_DEPTH16) {
+			WRITE(p, "cbuffer params : register(b0) {\n");
+			WRITE(p, "  float z_scale; float z_offset;\n");
+			WRITE(p, "};\n");
+		}
+	} else if (language == GLSL_VULKAN) {
+		WRITE(p, "#version 450\n");
 		WRITE(p, "#extension GL_ARB_separate_shader_objects : enable\n");
 		WRITE(p, "#extension GL_ARB_shading_language_420pack : enable\n");
 		WRITE(p, "layout(set = 0, binding = 0) uniform sampler2D tex;\n");
 		WRITE(p, "layout(set = 0, binding = 1) uniform sampler2D pal;\n");
 		WRITE(p, "layout(location = 0) in vec2 v_texcoord0;\n");
-		WRITE(p, "layout(location = 0) out vec4 fragColor0\n;");
+		WRITE(p, "layout(location = 0) out vec4 fragColor0;\n");
+
+		// Support for depth.
+		if (pixelFormat == GE_FORMAT_DEPTH16) {
+			WRITE(p, "layout (push_constant) uniform params {\n");
+			WRITE(p, "  float z_scale; float z_offset;\n");
+			WRITE(p, "};\n");
+		}
 	} else {
 		if (gl_extensions.IsGLES) {
 			WRITE(p, "#version 300 es\n");
 			WRITE(p, "precision mediump float;\n");
+			WRITE(p, "precision highp int;\n");
 		} else {
-			WRITE(p, "#version 330\n");
+			WRITE(p, "#version %d\n", gl_extensions.GLSLVersion());
 		}
 		WRITE(p, "in vec2 v_texcoord0;\n");
 		WRITE(p, "out vec4 fragColor0;\n");
@@ -50,18 +73,32 @@ void GenerateDepalShader300(char *buffer, GEBufferFormat pixelFormat, ShaderLang
 		WRITE(p, "uniform sampler2D pal;\n");
 	}
 
-	// TODO: Add support for integer textures. Though it hardly matters.
-	WRITE(p, "void main() {\n");
-	WRITE(p, "  vec4 color = texture(tex, v_texcoord0);\n");
+	if (language == HLSL_D3D11) {
+		WRITE(p, "float4 main(in float2 v_texcoord0 : TEXCOORD0) : SV_Target {\n");
+		WRITE(p, "  float4 color = tex.Sample(texSamp, v_texcoord0);\n");
+	} else {
+		WRITE(p, "void main() {\n");
+		WRITE(p, "  vec4 color = texture(tex, v_texcoord0);\n");
+	}
 
 	int mask = gstate.getClutIndexMask();
 	int shift = gstate.getClutIndexShift();
 	int offset = gstate.getClutIndexStartPos();
-	const GEPaletteFormat clutFormat = gstate.getClutPaletteFormat();
-	// Unfortunately sampling turned our texture into floating point. To avoid this, might be able
+	GEPaletteFormat clutFormat = gstate.getClutPaletteFormat();
+
+	// Sampling turns our texture into floating point. To avoid this, might be able
 	// to declare them as isampler2D objects, but these require integer textures, which needs more work.
-	// Anyhow, we simply work around this by converting back to integer. Hopefully there will be no loss of precision.
+	// Anyhow, we simply work around this by converting back to integer, which is fine.
 	// Use the mask to skip reading some components.
+
+	// TODO: Since we actually have higher precision color data here, we might want to apply a dithering pattern here
+	// in the 5551, 565 and 4444 modes. This would benefit Test Drive which renders at 16-bit on the real hardware
+	// and dithers immediately, while we render at higher color depth and thus don't dither resulting in banding
+	// when we sample it at low color depth like this.
+
+	// An alternative would be to have a special mode where we keep some extra precision here and sample the CLUT linearly - works for ramps such
+	// as those that Test Drive uses for its color remapping. But would need game specific flagging.
+
 	int shiftedMask = mask << shift;
 	switch (pixelFormat) {
 	case GE_FORMAT_8888:
@@ -91,6 +128,11 @@ void GenerateDepalShader300(char *buffer, GEBufferFormat pixelFormat, ShaderLang
 		if (shiftedMask & 0x8000) WRITE(p, "  int a = int(color.a);\n"); else WRITE(p, "  int a = 0;\n");
 		WRITE(p, "  int index = (a << 15) | (b << 10) | (g << 5) | (r);\n");
 		break;
+	case GE_FORMAT_DEPTH16:
+		// Remap depth buffer.
+		WRITE(p, "  float depth = (color.x - z_offset) * z_scale;\n");
+		WRITE(p, "  int index = int(clamp(depth, 0.0, 65535.0));\n");
+		break;
 	default:
 		break;
 	}
@@ -100,7 +142,7 @@ void GenerateDepalShader300(char *buffer, GEBufferFormat pixelFormat, ShaderLang
 		texturePixels = 512;
 
 	if (shift) {
-		WRITE(p, "  index = (int(uint(index) >> %i) & 0x%02x)", shift, mask);
+		WRITE(p, "  index = (int(uint(index) >> uint(%i)) & 0x%02x)", shift, mask);
 	} else {
 		WRITE(p, "  index = (index & 0x%02x)", mask);
 	}
@@ -110,7 +152,11 @@ void GenerateDepalShader300(char *buffer, GEBufferFormat pixelFormat, ShaderLang
 		WRITE(p, ";\n");
 	}
 
-	WRITE(p, "  fragColor0 = texture(pal, vec2((float(index) + 0.5) * (1.0 / %f), 0.0));\n", texturePixels);
+	if (language == HLSL_D3D11) {
+		WRITE(p, "  return pal.Load(int3(index, 0, 0)).bgra;\n");
+	} else {
+		WRITE(p, "  fragColor0 = texture(pal, vec2((float(index) + 0.5) * (1.0 / %f), 0.0));\n", texturePixels);
+	}
 	WRITE(p, "}\n");
 }
 
@@ -118,7 +164,7 @@ void GenerateDepalShader300(char *buffer, GEBufferFormat pixelFormat, ShaderLang
 void GenerateDepalShaderFloat(char *buffer, GEBufferFormat pixelFormat, ShaderLanguage lang) {
 	char *p = buffer;
 
-	const char *modFunc = lang == HLSL_DX9 ? "fmod" : "mod";
+	const char *modFunc = lang == HLSL_D3D9 ? "fmod" : "mod";
 
 	char lookupMethod[128] = "index.r";
 	char offset[128] = "";
@@ -207,6 +253,17 @@ void GenerateDepalShaderFloat(char *buffer, GEBufferFormat pixelFormat, ShaderLa
 			formatOK = false;
 		}
 		break;
+	case GE_FORMAT_DEPTH16:
+	{
+		// TODO: I think we can handle most scenarios here, but texturing from depth buffers requires an extension on ES 2.0 anyway.
+		if ((mask & (mask + 1)) == 0 && shift < 16) {
+			index_multiplier = 1.0f / (float)(1 << shift);
+			truncate_cpy(lookupMethod, "index.r");
+		} else {
+			formatOK = false;
+		}
+		break;
+	}
 	default:
 		break;
 	}
@@ -229,12 +286,16 @@ void GenerateDepalShaderFloat(char *buffer, GEBufferFormat pixelFormat, ShaderLa
 	float texel_offset = ((float)clutBase + 0.5f) / texturePixels;
 	sprintf(offset, " + %f", texel_offset);
 
-	if (lang == GLSL_140) {
+	if (lang == GLSL_1xx) {
 		if (gl_extensions.IsGLES) {
 			WRITE(p, "#version 100\n");
 			WRITE(p, "precision mediump float;\n");
 		} else {
-			WRITE(p, "#version 110\n");
+			WRITE(p, "#version %d\n", gl_extensions.GLSLVersion());
+			if (gl_extensions.VersionGEThan(3, 3)) {
+				WRITE(p, "#define gl_FragColor fragColor0\n");
+				WRITE(p, "out vec4 fragColor0;\n");
+			}
 		}
 		WRITE(p, "varying vec2 v_texcoord0;\n");
 		WRITE(p, "uniform sampler2D tex;\n");
@@ -244,7 +305,7 @@ void GenerateDepalShaderFloat(char *buffer, GEBufferFormat pixelFormat, ShaderLa
 		WRITE(p, "  float coord = (%s * %f)%s;\n", lookupMethod, index_multiplier, offset);
 		WRITE(p, "  gl_FragColor = texture2D(pal, vec2(coord, 0.0));\n");
 		WRITE(p, "}\n");
-	} else if (lang == HLSL_DX9) {
+	} else if (lang == HLSL_D3D9) {
 		WRITE(p, "sampler tex: register(s0);\n");
 		WRITE(p, "sampler pal: register(s1);\n");
 		WRITE(p, "float4 main(float2 v_texcoord0 : TEXCOORD0) : COLOR0 {\n");
@@ -257,17 +318,29 @@ void GenerateDepalShaderFloat(char *buffer, GEBufferFormat pixelFormat, ShaderLa
 
 void GenerateDepalShader(char *buffer, GEBufferFormat pixelFormat, ShaderLanguage language) {
 	switch (language) {
-	case GLSL_140:
+	case GLSL_1xx:
 		GenerateDepalShaderFloat(buffer, pixelFormat, language);
 		break;
-	case GLSL_300:
+	case GLSL_3xx:
 	case GLSL_VULKAN:
+	case HLSL_D3D11:
 		GenerateDepalShader300(buffer, pixelFormat, language);
 		break;
-	case HLSL_DX9:
+	case HLSL_D3D9:
 		GenerateDepalShaderFloat(buffer, pixelFormat, language);
 		break;
+	default:
+		_assert_msg_(false, "Depal shader language not supported: %d", (int)language);
 	}
+}
+
+uint32_t DepalShaderCacheCommon::GenerateShaderID(uint32_t clutMode, GEBufferFormat pixelFormat) const {
+	return (clutMode & 0xFFFFFF) | (pixelFormat << 24);
+}
+
+uint32_t DepalShaderCacheCommon::GetClutID(GEPaletteFormat clutFormat, uint32_t clutHash) const {
+	// Simplistic.
+	return clutHash ^ (uint32_t)clutFormat;
 }
 
 #undef WRITE

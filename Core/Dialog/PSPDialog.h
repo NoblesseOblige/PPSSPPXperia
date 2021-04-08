@@ -19,6 +19,10 @@
 
 #include "Common/Common.h"
 #include "Common/CommonTypes.h"
+#include "Common/Render/TextureAtlas.h"
+#include "Common/Swap.h"
+#include "Core/HLE/sceUtility.h"
+#include "Core/Util/PPGeDraw.h"
 
 class PointerWrap;
 
@@ -26,9 +30,11 @@ class PointerWrap;
 #define SCE_UTILITY_DIALOG_RESULT_CANCEL       1
 #define SCE_UTILITY_DIALOG_RESULT_ABORT        2
 
-const int SCE_ERROR_UTILITY_INVALID_STATUS     = 0x80110001;
-const int SCE_ERROR_UTILITY_INVALID_PARAM_SIZE = 0x80110004;
-const int SCE_ERROR_UTILITY_WRONG_TYPE         = 0x80110005;
+const int SCE_ERROR_UTILITY_INVALID_STATUS      = 0x80110001;
+const int SCE_ERROR_UTILITY_INVALID_PARAM_SIZE  = 0x80110004;
+const int SCE_ERROR_UTILITY_WRONG_TYPE          = 0x80110005;
+const int ERROR_UTILITY_INVALID_ADHOC_CHANNEL   = 0x80110104;
+const int ERROR_UTILITY_INVALID_SYSTEM_PARAM_ID = 0x80110103;
 
 struct pspUtilityDialogCommon
 {
@@ -47,7 +53,7 @@ struct pspUtilityDialogCommon
 class PSPDialog
 {
 public:
-	PSPDialog();
+	PSPDialog(UtilityDialogType type);
 	virtual ~PSPDialog();
 
 	virtual int Update(int animSpeed) = 0;
@@ -74,10 +80,17 @@ public:
 	};
 
 	DialogStatus GetStatus();
+	UtilityDialogType DialogType() { return dialogType_; }
 
 	void StartDraw();
 	void EndDraw();
+
+	void FinishVolatile();
+	int FinishShutdown();
+
 protected:
+	PPGeStyle FadedStyle(PPGeAlign align, float scale);
+	PPGeImageStyle FadedImageStyle();
 	void UpdateButtons();
 	bool IsButtonPressed(int checkButton);
 	bool IsButtonHeld(int checkButton, int &framesHeld, int framesHeldThreshold = 30, int framesHeldRepeatRate = 10);
@@ -86,31 +99,36 @@ protected:
 	void ChangeStatus(DialogStatus newStatus, int delayUs);
 	void ChangeStatusInit(int delayUs);
 	void ChangeStatusShutdown(int delayUs);
+	DialogStatus ReadStatus() {
+		return status;
+	}
 
 	// TODO: Remove this once all dialogs are updated.
-	virtual bool UseAutoStatus() {
-		return true;
-	}
+	virtual bool UseAutoStatus() = 0;
 
 	void StartFade(bool fadeIn_);
 	void UpdateFade(int animSpeed);
 	virtual void FinishFadeOut();
 	u32 CalcFadedColor(u32 inColor);
 
-	DialogStatus status;
-	DialogStatus pendingStatus;
-	u64 pendingStatusTicks;
+	DialogStatus pendingStatus = SCE_UTILITY_STATUS_NONE;
+	u64 pendingStatusTicks = 0;
 
-	unsigned int lastButtons;
-	unsigned int buttons;
+	unsigned int lastButtons = 0;
+	unsigned int buttons = 0;
 
 	float fadeTimer;
 	bool isFading;
 	bool fadeIn;
 	u32 fadeValue;
 
-	int okButtonImg;
-	int cancelButtonImg;
+	ImageID okButtonImg;
+	ImageID cancelButtonImg;
 	int okButtonFlag;
 	int cancelButtonFlag;
+
+private:
+	DialogStatus status = SCE_UTILITY_STATUS_NONE;
+	UtilityDialogType dialogType_;
+	bool volatileLocked_ = false;
 };

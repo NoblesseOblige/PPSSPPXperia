@@ -17,7 +17,9 @@
 
 #include <algorithm>
 
+#include "Common/Serialize/SerializeFuncs.h"
 #include "Core/Config.h"
+#include "Core/Debugger/MemBlockInfo.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/HW/SimpleAudioDec.h"
 #include "Core/HW/MediaEngine.h"
@@ -61,8 +63,12 @@ SimpleAudio::SimpleAudio(int audioType, int sample_rate, int channels)
 
 void SimpleAudio::Init() {
 #ifdef USE_FFMPEG
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(58, 18, 100)
 	avcodec_register_all();
+#endif
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(58, 12, 100)
 	av_register_all();
+#endif
 	InitFFmpeg();
 
 	frame_ = av_frame_alloc();
@@ -134,6 +140,7 @@ void SimpleAudio::SetChannels(int channels) {
 		// Do nothing, already set.
 		return;
 	}
+#ifdef USE_FFMPEG
 
 	if (codecOpen_) {
 		ERROR_LOG(ME, "Codec already open, cannot change channels");
@@ -142,6 +149,7 @@ void SimpleAudio::SetChannels(int channels) {
 		codecCtx_->channels = channels_;
 		codecCtx_->channel_layout = channels_ == 2 ? AV_CH_LAYOUT_STEREO : AV_CH_LAYOUT_MONO;
 	}
+#endif
 }
 
 SimpleAudio::~SimpleAudio() {
@@ -185,7 +193,25 @@ bool SimpleAudio::Decode(void *inbuf, int inbytes, uint8_t *outbuf, int *outbyte
 
 	*outbytes = 0;
 	srcPos = 0;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 48, 101)
+	if (inbytes != 0) {
+		int err = avcodec_send_packet(codecCtx_, &packet);
+		if (err < 0) {
+			ERROR_LOG(ME, "Error sending audio frame to decoder (%d bytes): %d (%08x)", inbytes, err, err);
+			return false;
+		}
+	}
+	int err = avcodec_receive_frame(codecCtx_, frame_);
+	int len = 0;
+	if (err >= 0) {
+		len = frame_->pkt_size;
+		got_frame = 1;
+	} else if (err != AVERROR(EAGAIN)) {
+		len = err;
+	}
+#else
 	int len = avcodec_decode_audio4(codecCtx_, frame_, &got_frame, &packet);
+#endif
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 12, 100)
 	av_packet_unref(&packet);
 #else
@@ -296,15 +322,8 @@ AuCtx::AuCtx() {
 	PCMBuf = 0;
 	PCMBufSize = 2048;
 	AuBufAvailable = 0;
-	SamplingRate = 44100;
-	freq = SamplingRate;
-	BitRate = 0;
-	Channels = 2;
-	Version = 0;
 	SumDecodedSamples = 0;
-	MaxOutputSample = 0;
 	askedReadSize = 0;
-	realReadSize = 0;
 	audioType = 0;
 	FrameNum = 0;
 };
@@ -316,57 +335,72 @@ AuCtx::~AuCtx(){
 	}
 };
 
+size_t AuCtx::FindNextMp3Sync() {
+	if (audioType != PSP_CODEC_MP3) {
+		return 0;
+	}
+
+	for (size_t i = 0; i < sourcebuff.size() - 2; ++i) {
+		if ((sourcebuff[i] & 0xFF) == 0xFF && (sourcebuff[i + 1] & 0xC0) == 0xC0) {
+			return i;
+		}
+	}
+	return 0;
+}
+
 // return output pcm size, <0 error
-u32 AuCtx::AuDecode(u32 pcmAddr)
-{
-	if (!Memory::IsValidAddress(pcmAddr)){
-		ERROR_LOG(ME, "%s: output bufferAddress %08x is invalctx", __FUNCTION__, pcmAddr);
-		return -1;
+u32 AuCtx::AuDecode(u32 pcmAddr) {
+	if (!Memory::GetPointer(PCMBuf)) {
+		return hleLogError(ME, -1, "ctx output bufferAddress %08x is invalid", PCMBuf);
 	}
 
 	auto outbuf = Memory::GetPointer(PCMBuf);
-	memset(outbuf, 0, PCMBufSize); // important! empty outbuf to avoid noise
-	u32 outpcmbufsize = 0;
+	int outpcmbufsize = 0;
 
-	int repeat = 1;
-	if (g_Config.bSoundSpeedHack){
-		repeat = 2;
-	}
-	int i = 0;
-	// decode frames in sourcebuff and output into PCMBuf (each time, we decode one or two frames)
-	// some games as Miku like one frame each time, some games like DOA like two frames each time
-	while (sourcebuff.size() > 0 && outpcmbufsize < PCMBufSize && i < repeat){
-		i++;
-		int pcmframesize;
-		// decode
-		decoder->Decode((void*)sourcebuff.c_str(), (int)sourcebuff.size(), outbuf, &pcmframesize);
-		if (pcmframesize == 0){
-			// no output pcm, we are at the end of the stream
+	// Decode a single frame in sourcebuff and output into PCMBuf.
+	if (!sourcebuff.empty()) {
+		// FFmpeg doesn't seem to search for a sync for us, so let's do that.
+		int nextSync = (int)FindNextMp3Sync();
+		decoder->Decode(&sourcebuff[nextSync], (int)sourcebuff.size() - nextSync, outbuf, &outpcmbufsize);
+
+		if (outpcmbufsize == 0) {
+			// Nothing was output, hopefully we're at the end of the stream.
 			AuBufAvailable = 0;
 			sourcebuff.clear();
-			if (LoopNum != 0){
-				// if we loop, reset readPos
-				readPos = startPos;
-			}
-			break;
+		} else {
+			// Update our total decoded samples, but don't count stereo.
+			SumDecodedSamples += decoder->GetOutSamples() / 2;
+			// get consumed source length
+			int srcPos = decoder->GetSourcePos() + nextSync;
+			// remove the consumed source
+			if (srcPos > 0)
+				sourcebuff.erase(sourcebuff.begin(), sourcebuff.begin() + srcPos);
+			// reduce the available Aubuff size
+			// (the available buff size is now used to know if we can read again from file and how many to read)
+			AuBufAvailable -= srcPos;
 		}
-		// count total output pcm size 
-		outpcmbufsize += pcmframesize;
-		// count total output samples
-		SumDecodedSamples += decoder->GetOutSamples();
-		// get consumed source length
-		int srcPos = decoder->GetSourcePos();
-		// remove the consumed source
-		sourcebuff.erase(0, srcPos);
-		// reduce the available Aubuff size
-		// (the available buff size is now used to know if we can read again from file and how many to read)
-		AuBufAvailable -= srcPos;
-		// move outbuff position to the current end of output 
-		outbuf += pcmframesize;
-		// increase FrameNum count
-		FrameNum++;
 	}
-	Memory::Write_U32(PCMBuf, pcmAddr);
+
+	bool end = readPos - AuBufAvailable >= (int64_t)endPos;
+	if (end && LoopNum != 0) {
+		// When looping, start the sum back off at zero and reset readPos to the start.
+		SumDecodedSamples = 0;
+		readPos = startPos;
+		if (LoopNum > 0)
+			LoopNum--;
+	}
+
+	if (outpcmbufsize == 0 && !end) {
+		outpcmbufsize = MaxOutputSample * 4;
+		memset(outbuf, 0, PCMBufSize);
+	} else if ((u32)outpcmbufsize < PCMBufSize) {
+		// TODO: We probably should use a rolling buffer instead.
+		memset(outbuf + outpcmbufsize, 0, PCMBufSize - outpcmbufsize);
+	}
+
+	NotifyMemInfo(MemBlockFlags::WRITE, pcmAddr, outpcmbufsize, "AuDecode");
+	if (pcmAddr)
+		Memory::Write_U32(PCMBuf, pcmAddr);
 	return outpcmbufsize;
 }
 
@@ -382,36 +416,56 @@ u32 AuCtx::AuSetLoopNum(int loop)
 }
 
 // return 1 to read more data stream, 0 don't read
-int AuCtx::AuCheckStreamDataNeeded()
-{
-	// if we have no available Au buffer, and the current read position in source file is not the end of stream, then we can read
-	if (AuBufAvailable < (int)AuBufSize && readPos < (int)endPos){
+int AuCtx::AuCheckStreamDataNeeded() {
+	// If we would ask for bytes, then some are needed.
+	if (AuStreamBytesNeeded() > 0) {
 		return 1;
 	}
 	return 0;
 }
 
-// check how many bytes we have read from source file
-u32 AuCtx::AuNotifyAddStreamData(int size)
-{
-	realReadSize = size;
-	int diffsize = realReadSize - askedReadSize;
-	// Notify the real read size
-	if (diffsize != 0){
-		readPos += diffsize;
-		AuBufAvailable += diffsize;
+int AuCtx::AuStreamBytesNeeded() {
+	if (audioType == PSP_CODEC_MP3) {
+		// The endPos and readPos are not considered, except when you've read to the end.
+		if (readPos >= endPos)
+			return 0;
+		// Account for the workarea.
+		int offset = AuStreamWorkareaSize();
+		return (int)AuBufSize - AuBufAvailable - offset;
 	}
 
-	// append AuBuf into sourcebuff
-	sourcebuff.append((const char*)Memory::GetPointer(AuBuf), size);
+	// TODO: Untested.  Maybe similar to MP3.
+	return std::min((int)AuBufSize - AuBufAvailable, (int)endPos - readPos);
+}
 
-	if (readPos >= (int)endPos && LoopNum != 0){
-		// if we need loop, reset readPos
-		readPos = startPos;
-		// reset LoopNum
-		if (LoopNum > 0){
-			LoopNum--;
+int AuCtx::AuStreamWorkareaSize() {
+	// Note that this is 31 bytes more than the max layer 3 frame size.
+	if (audioType == PSP_CODEC_MP3)
+		return 0x05c0;
+	return 0;
+}
+
+// check how many bytes we have read from source file
+u32 AuCtx::AuNotifyAddStreamData(int size) {
+	int offset = AuStreamWorkareaSize();
+
+	if (askedReadSize != 0) {
+		// Old save state, numbers already adjusted.
+		int diffsize = size - askedReadSize;
+		// Notify the real read size
+		if (diffsize != 0) {
+			readPos += diffsize;
+			AuBufAvailable += diffsize;
 		}
+		askedReadSize = 0;
+	} else {
+		readPos += size;
+		AuBufAvailable += size;
+	}
+
+	if (Memory::IsValidRange(AuBuf, size)) {
+		sourcebuff.resize(sourcebuff.size() + size);
+		Memory::MemcpyUnchecked(&sourcebuff[sourcebuff.size() - size], AuBuf + offset, size);
 	}
 
 	return 0;
@@ -419,34 +473,50 @@ u32 AuCtx::AuNotifyAddStreamData(int size)
 
 // read from stream position srcPos of size bytes into buff
 // buff, size and srcPos are all pointers
-u32 AuCtx::AuGetInfoToAddStreamData(u32 buff, u32 size, u32 srcPos)
-{
-	// you can not read beyond file size and the buffer size
-	int readsize = std::min((int)AuBufSize - AuBufAvailable, (int)endPos - readPos);
+u32 AuCtx::AuGetInfoToAddStreamData(u32 bufPtr, u32 sizePtr, u32 srcPosPtr) {
+	int readsize = AuStreamBytesNeeded();
+	int offset = AuStreamWorkareaSize();
 
 	// we can recharge AuBuf from its beginning
-	if (Memory::IsValidAddress(buff))
-		Memory::Write_U32(AuBuf, buff);
-	if (Memory::IsValidAddress(size))
-		Memory::Write_U32(readsize, size);
-	if (Memory::IsValidAddress(srcPos))
-		Memory::Write_U32(readPos, srcPos);
+	if (readsize != 0) {
+		if (Memory::IsValidAddress(bufPtr))
+			Memory::Write_U32(AuBuf + offset, bufPtr);
+		if (Memory::IsValidAddress(sizePtr))
+			Memory::Write_U32(readsize, sizePtr);
+		if (Memory::IsValidAddress(srcPosPtr))
+			Memory::Write_U32(readPos, srcPosPtr);
+	} else {
+		if (Memory::IsValidAddress(bufPtr))
+			Memory::Write_U32(0, bufPtr);
+		if (Memory::IsValidAddress(sizePtr))
+			Memory::Write_U32(0, sizePtr);
+		if (Memory::IsValidAddress(srcPosPtr))
+			Memory::Write_U32(0, srcPosPtr);
+	}
 
-	// preset the readPos and available size, they will be notified later in NotifyAddStreamData.
-	askedReadSize = readsize;
-	readPos += askedReadSize;
-	AuBufAvailable += askedReadSize;
-
+	// Just for old save states.
+	askedReadSize = 0;
 	return 0;
 }
 
-u32 AuCtx::AuResetPlayPositionByFrame(int position) {
-	readPos = position;
+u32 AuCtx::AuResetPlayPositionByFrame(int frame) {
+	// Note: this doesn't correctly handle padding or slot size, but the PSP doesn't either.
+	uint32_t bytesPerSecond = (MaxOutputSample / 8) * BitRate * 1000;
+	readPos = startPos + (frame * bytesPerSecond) / SamplingRate;
+	// Not sure why, but it seems to consistently seek 1 before, maybe in case it's off slightly.
+	if (frame != 0)
+		readPos -= 1;
+	SumDecodedSamples = frame * MaxOutputSample;
+	AuBufAvailable = 0;
+	sourcebuff.clear();
 	return 0;
 }
 
 u32 AuCtx::AuResetPlayPosition() {
 	readPos = startPos;
+	SumDecodedSamples = 0;
+	AuBufAvailable = 0;
+	sourcebuff.clear();
 	return 0;
 }
 
@@ -455,24 +525,25 @@ void AuCtx::DoState(PointerWrap &p) {
 	if (!s)
 		return;
 
-	p.Do(startPos);
-	p.Do(endPos);
-	p.Do(AuBuf);
-	p.Do(AuBufSize);
-	p.Do(PCMBuf);
-	p.Do(PCMBufSize);
-	p.Do(freq);
-	p.Do(SumDecodedSamples);
-	p.Do(LoopNum);
-	p.Do(Channels);
-	p.Do(MaxOutputSample);
-	p.Do(readPos);
-	p.Do(audioType);
-	p.Do(BitRate);
-	p.Do(SamplingRate);
-	p.Do(askedReadSize);
-	p.Do(realReadSize);
-	p.Do(FrameNum);
+	Do(p, startPos);
+	Do(p, endPos);
+	Do(p, AuBuf);
+	Do(p, AuBufSize);
+	Do(p, PCMBuf);
+	Do(p, PCMBufSize);
+	Do(p, freq);
+	Do(p, SumDecodedSamples);
+	Do(p, LoopNum);
+	Do(p, Channels);
+	Do(p, MaxOutputSample);
+	Do(p, readPos);
+	Do(p, audioType);
+	Do(p, BitRate);
+	Do(p, SamplingRate);
+	Do(p, askedReadSize);
+	int dummy = 0;
+	Do(p, dummy);
+	Do(p, FrameNum);
 
 	if (p.mode == p.MODE_READ) {
 		decoder = new SimpleAudio(audioType);

@@ -14,6 +14,8 @@ PPSSPP_EXECUTABLES = [
   "Windows\\Release\\PPSSPPHeadless.exe",
   "Windows\\x64\\Debug\\PPSSPPHeadless.exe",
   "Windows\\x64\\Release\\PPSSPPHeadless.exe",
+  "build*/PPSSPPHeadless.exe",
+  "./PPSSPPHeadless.exe",
   # Mac
   "build*/Debug/PPSSPPHeadless",
   "build*/Release/PPSSPPHeadless",
@@ -21,12 +23,14 @@ PPSSPP_EXECUTABLES = [
   "build*/MinSizeRel/PPSSPPHeadless",
   # Linux
   "build*/PPSSPPHeadless",
-  "./PPSSPPHeadless"
+  "./PPSSPPHeadless",
+  # CI
+  "ppsspp/PPSSPPHeadless",
+  "ppsspp\\PPSSPPHeadless.exe",
 ]
 
 PPSSPP_EXE = None
 TEST_ROOT = "pspautotests/tests/"
-teamcity_mode = False
 TIMEOUT = 5
 
 class Command(object):
@@ -40,7 +44,7 @@ class Command(object):
   def run(self, timeout):
     def target():
       self.process = subprocess.Popen(self.cmd, bufsize=1, stdin=subprocess.PIPE, stdout=sys.stdout, stderr=subprocess.STDOUT)
-      self.process.stdin.write(self.data)
+      self.process.stdin.write(self.data.encode('utf-8'))
       self.process.stdin.close()
       self.process.communicate()
 
@@ -369,11 +373,6 @@ def init():
     print("PPSSPPHeadless executable missing, please build one.")
     sys.exit(1)
 
-def tcprint(arg):
-  global teamcity_mode
-  if teamcity_mode:
-    print(arg)
-
 def run_tests(test_list, args):
   global PPSSPP_EXE, TIMEOUT
   tests_passed = []
@@ -397,17 +396,15 @@ def run_tests(test_list, args):
     c = Command(cmdline, '\n'.join(test_filenames))
     c.run(TIMEOUT * len(test_filenames))
 
-    print("Ran " + PPSSPP_EXE)
+    print("Ran " + ' '.join(cmdline))
 
 
 def main():
-  global teamcity_mode
   init()
   tests = []
   args = []
   for arg in sys.argv[1:]:
     if arg == '--teamcity':
-      teamcity_mode = True
       args.append(arg)
     elif arg[0] == '-':
       args.append(arg)

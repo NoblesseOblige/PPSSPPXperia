@@ -15,19 +15,28 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Core/CoreTiming.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
-#include "Core/MIPS/MIPS.h"
-#include "Core/CoreTiming.h"
-#include "Common/ChunkFile.h"
+#include "Core/HLE/KernelWaitHelpers.h"
+#include "Core/HLE/sceKernelThread.h"
 #include "Core/HLE/sceUsb.h"
+#include "Core/MIPS/MIPS.h"
+#include "Core/Reporting.h"
+
+static constexpr uint32_t ERROR_USB_WAIT_TIMEOUT = 0x80243008;
 
 // TODO: Map by driver name
-bool usbStarted = false;
+static bool usbStarted = false;
 // TODO: Check actual status
-bool usbConnected = true;
+static bool usbConnected = true;
 // TODO: Activation by product id
-bool usbActivated = false;
+static bool usbActivated = false;
+
+static int usbWaitTimer = -1;
+static std::vector<SceUID> waitingThreads;
 
 enum UsbStatus {
 	USB_STATUS_STOPPED      = 0x001,
@@ -38,58 +47,168 @@ enum UsbStatus {
 	USB_STATUS_ACTIVATED    = 0x200,
 };
 
-void __UsbInit()
-{
+static int UsbCurrentState() {
+	int state = 0;
+	if (usbStarted) {
+		state = USB_STATUS_STARTED
+			| (usbConnected ? USB_STATUS_CONNECTED : USB_STATUS_DISCONNECTED)
+			| (usbActivated ? USB_STATUS_ACTIVATED : USB_STATUS_DEACTIVATED);
+	}
+	return state;
+}
+
+static bool UsbMatchState(int state, u32 mode) {
+	int match = state & UsbCurrentState();
+	if (mode == 0) {
+		return match == state;
+	}
+	return match != 0;
+}
+
+static void UsbSetTimeout(PSPPointer<int> timeout) {
+	if (!timeout.IsValid() || usbWaitTimer == -1)
+		return;
+
+	// This should call __UsbWaitTimeout() later, unless we cancel it.
+	CoreTiming::ScheduleEvent(usToCycles(*timeout), usbWaitTimer, __KernelGetCurThread());
+}
+
+static void UsbWaitExecTimeout(u64 userdata, int cycleslate) {
+	u32 error;
+	SceUID threadID = (SceUID)userdata;
+
+	PSPPointer<int> timeout = PSPPointer<int>::Create(__KernelGetWaitTimeoutPtr(threadID, error));
+	if (timeout.IsValid())
+		*timeout = 0;
+
+	HLEKernel::RemoveWaitingThread(waitingThreads, threadID);
+	__KernelResumeThreadFromWait(threadID, ERROR_USB_WAIT_TIMEOUT);
+	__KernelReSchedule("wait timed out");
+}
+
+static void UsbUpdateState() {
+	u32 error;
+	bool wokeThreads = false;
+	for (size_t i = 0; i < waitingThreads.size(); ++i) {
+		SceUID threadID = waitingThreads[i];
+		int state = __KernelGetWaitID(threadID, WAITTYPE_USB, error);
+		if (error != 0)
+			continue;
+
+		u32 mode = __KernelGetWaitValue(threadID, error);
+		if (UsbMatchState(state, mode)) {
+			waitingThreads.erase(waitingThreads.begin() + i);
+			--i;
+
+			PSPPointer<int> timeout = PSPPointer<int>::Create(__KernelGetWaitTimeoutPtr(threadID, error));
+			if (timeout.IsValid() && usbWaitTimer != -1) {
+				// Remove any event for this thread.
+				s64 cyclesLeft = CoreTiming::UnscheduleEvent(usbWaitTimer, threadID);
+				*timeout = (int)cyclesToUs(cyclesLeft);
+			}
+
+			__KernelResumeThreadFromWait(threadID, UsbCurrentState());
+		}
+	}
+
+	if (wokeThreads)
+		hleReSchedule("usb state change");
+}
+
+void __UsbInit() {
 	usbStarted = false;
 	usbConnected = true;
 	usbActivated = false;
+	waitingThreads.clear();
+
+	usbWaitTimer = CoreTiming::RegisterEvent("UsbWaitTimeout", UsbWaitExecTimeout);
 }
 
-void __UsbDoState(PointerWrap &p)
-{
-	auto s = p.Section("sceUsb", 1, 2);
+void __UsbDoState(PointerWrap &p) {
+	auto s = p.Section("sceUsb", 1, 3);
 	if (!s)
 		return;
 
 	if (s >= 2) {
-		p.Do(usbStarted);
-		p.Do(usbConnected);
+		Do(p, usbStarted);
+		Do(p, usbConnected);
 	} else {
 		usbStarted = false;
 		usbConnected = true;
 	}
-	p.Do(usbActivated);
+	Do(p, usbActivated);
+	if (s >= 3) {
+		Do(p, waitingThreads);
+		Do(p, usbWaitTimer);
+	} else {
+		waitingThreads.clear();
+		usbWaitTimer = -1;
+	}
+	CoreTiming::RestoreRegisterEvent(usbWaitTimer, "UsbWaitTimeout", UsbWaitExecTimeout);
 }
 
 static int sceUsbStart(const char* driverName, u32 argsSize, u32 argsPtr) {
-	ERROR_LOG(HLE, "UNIMPL sceUsbStart(%s, %i, %08x)", driverName, argsSize, argsPtr);
+	INFO_LOG(HLE, "sceUsbStart(%s, %i, %08x)", driverName, argsSize, argsPtr);
 	usbStarted = true;
+	UsbUpdateState();
 	return 0;
 }
 
 static int sceUsbStop(const char* driverName, u32 argsSize, u32 argsPtr) {
-	ERROR_LOG(HLE, "UNIMPL sceUsbStop(%s, %i, %08x)", driverName, argsSize, argsPtr);
+	INFO_LOG(HLE, "sceUsbStop(%s, %i, %08x)", driverName, argsSize, argsPtr);
 	usbStarted = false;
+	UsbUpdateState();
 	return 0;
 }
 
 static int sceUsbGetState() {
-	ERROR_LOG(HLE, "UNIMPL sceUsbGetState");
-	int state = (usbStarted ? USB_STATUS_STARTED : USB_STATUS_STOPPED)
-	    | (usbConnected ? USB_STATUS_CONNECTED : USB_STATUS_DISCONNECTED)
-	    | (usbActivated ? USB_STATUS_ACTIVATED : USB_STATUS_DEACTIVATED);
+	int state = 0;
+	if (!usbStarted) {
+		state = 0x80243007;
+	} else {
+		state = UsbCurrentState();
+	}
+	DEBUG_LOG(HLE, "sceUsbGetState: 0x%x", state);
 	return state;
 }
 
 static int sceUsbActivate(u32 pid) {
-	ERROR_LOG(HLE, "UNIMPL sceUsbActivate(%i)", pid);
+	INFO_LOG(HLE, "sceUsbActivate(%i)", pid);
 	usbActivated = true;
+	UsbUpdateState();
 	return 0;
 }
 
 static int sceUsbDeactivate(u32 pid) {
-	ERROR_LOG(HLE, "UNIMPL sceUsbDeactivate(%i)", pid);
+	INFO_LOG(HLE, "sceUsbDeactivate(%i)", pid);
 	usbActivated = false;
+	UsbUpdateState();
+	return 0;
+}
+
+static int sceUsbWaitState(int state, u32 waitMode, u32 timeoutPtr) {
+	hleEatCycles(10000);
+
+	if (waitMode >= 2)
+		return hleLogError(HLE, SCE_KERNEL_ERROR_ILLEGAL_MODE, "invalid mode");
+	if (state == 0)
+		return hleLogError(HLE, SCE_KERNEL_ERROR_EVF_ILPAT, "bad state");
+
+	if (UsbMatchState(state, waitMode)) {
+		return hleLogSuccessX(HLE, UsbCurrentState());
+	}
+
+	// We'll have to wait as long as it takes.  Cleanup first, just in case.
+	HLEKernel::RemoveWaitingThread(waitingThreads, __KernelGetCurThread());
+	waitingThreads.push_back(__KernelGetCurThread());
+
+	UsbSetTimeout(PSPPointer<int>::Create(timeoutPtr));
+	__KernelWaitCurThread(WAITTYPE_USB, state, waitMode, timeoutPtr, false, "usb state waited");
+	return hleLogSuccessI(HLE, 0, "waiting");
+}
+
+static int sceUsbWaitStateCB(int state, u32 waitMode, u32 timeoutPtr) {
+	ERROR_LOG_REPORT(HLE, "UNIMPL sceUsbWaitStateCB(%i, %i, %08x)", state, waitMode, timeoutPtr);
 	return 0;
 }
 
@@ -102,8 +221,8 @@ const HLEFunction sceUsb[] =
 	{0X112CC951, nullptr,                            "sceUsbGetDrvState",                       '?', ""   },
 	{0X586DB82C, &WrapI_U<sceUsbActivate>,           "sceUsbActivate",                          'i', "x"  },
 	{0XC572A9C8, &WrapI_U<sceUsbDeactivate>,         "sceUsbDeactivate",                        'i', "x"  },
-	{0X5BE0E002, nullptr,                            "sceUsbWaitState",                         '?', ""   },
-	{0X616F2B61, nullptr,                            "sceUsbWaitStateCB",                       '?', ""   },
+	{0X5BE0E002, &WrapI_IUU<sceUsbWaitState>,        "sceUsbWaitState",                         'x', "xip"},
+	{0X616F2B61, &WrapI_IUU<sceUsbWaitStateCB>,      "sceUsbWaitStateCB",                       'x', "xip"},
 	{0X1C360735, nullptr,                            "sceUsbWaitCancel",                        '?', ""   },
 };
 
@@ -122,68 +241,9 @@ const HLEFunction sceUsbstorBoot[] =
 	{0XA55C9E16, nullptr,                            "sceUsbstorBootUnregisterNotify",          '?', ""   },
 };
 
-const HLEFunction sceUsbCam[] =
-{
-	{0X17F7B2FB, nullptr,                            "sceUsbCamSetupVideo",                     '?', ""   },
-	{0XF93C4669, nullptr,                            "sceUsbCamAutoImageReverseSW",             '?', ""   },
-	{0X574A8C3F, nullptr,                            "sceUsbCamStartVideo",                     '?', ""   },
-	{0X6CF32CB9, nullptr,                            "sceUsbCamStopVideo",                      '?', ""   },
-	{0X03ED7A82, nullptr,                            "sceUsbCamSetupMic",                       '?', ""   },
-	{0X82A64030, nullptr,                            "sceUsbCamStartMic",                       '?', ""   },
-	{0X7DAC0C71, nullptr,                            "sceUsbCamReadVideoFrameBlocking",         '?', ""   },
-	{0X99D86281, nullptr,                            "sceUsbCamReadVideoFrame",                 '?', ""   },
-	{0X41E73E95, nullptr,                            "sceUsbCamPollReadVideoFrameEnd",          '?', ""   },
-	{0XF90B2293, nullptr,                            "sceUsbCamWaitReadVideoFrameEnd",          '?', ""   },
-	{0X4C34F553, nullptr,                            "sceUsbCamGetLensDirection",               '?', ""   },
-	{0X3F0CF289, nullptr,                            "sceUsbCamSetupStill",                     '?', ""   },
-	{0X0A41A298, nullptr,                            "sceUsbCamSetupStillEx",                   '?', ""   },
-	{0X61BE5CAC, nullptr,                            "sceUsbCamStillInputBlocking",             '?', ""   },
-	{0XFB0A6C5D, nullptr,                            "sceUsbCamStillInput",                     '?', ""   },
-	{0X7563AFA1, nullptr,                            "sceUsbCamStillWaitInputEnd",              '?', ""   },
-	{0X1A46CFE7, nullptr,                            "sceUsbCamStillPollInputEnd",              '?', ""   },
-	{0XA720937C, nullptr,                            "sceUsbCamStillCancelInput",               '?', ""   },
-	{0XE5959C36, nullptr,                            "sceUsbCamStillGetInputLength",            '?', ""   },
-	{0XCFE9E999, nullptr,                            "sceUsbCamSetupVideoEx",                   '?', ""   },
-	{0XDF9D0C92, nullptr,                            "sceUsbCamGetReadVideoFrameSize",          '?', ""   },
-	{0X6E205974, nullptr,                            "sceUsbCamSetSaturation",                  '?', ""   },
-	{0X4F3D84D5, nullptr,                            "sceUsbCamSetBrightness",                  '?', ""   },
-	{0X09C26C7E, nullptr,                            "sceUsbCamSetContrast",                    '?', ""   },
-	{0X622F83CC, nullptr,                            "sceUsbCamSetSharpness",                   '?', ""   },
-	{0XD4876173, nullptr,                            "sceUsbCamSetImageEffectMode",             '?', ""   },
-	{0X1D686870, nullptr,                            "sceUsbCamSetEvLevel",                     '?', ""   },
-	{0X951BEDF5, nullptr,                            "sceUsbCamSetReverseMode",                 '?', ""   },
-	{0XC484901F, nullptr,                            "sceUsbCamSetZoom",                        '?', ""   },
-	{0X383E9FA8, nullptr,                            "sceUsbCamGetSaturation",                  '?', ""   },
-	{0X70F522C5, nullptr,                            "sceUsbCamGetBrightness",                  '?', ""   },
-	{0XA063A957, nullptr,                            "sceUsbCamGetContrast",                    '?', ""   },
-	{0XFDB68C23, nullptr,                            "sceUsbCamGetSharpness",                   '?', ""   },
-	{0X994471E0, nullptr,                            "sceUsbCamGetImageEffectMode",             '?', ""   },
-	{0X2BCD50C0, nullptr,                            "sceUsbCamGetEvLevel",                     '?', ""   },
-	{0XD5279339, nullptr,                            "sceUsbCamGetReverseMode",                 '?', ""   },
-	{0X9E8AAF8D, nullptr,                            "sceUsbCamGetZoom",                        '?', ""   },
-	{0X11A1F128, nullptr,                            "sceUsbCamGetAutoImageReverseState",       '?', ""   },
-	{0X08AEE98A, nullptr,                            "sceUsbCamSetMicGain",                     '?', ""   },
-	{0X2E930264, nullptr,                            "sceUsbCamSetupMicEx",                     '?', ""   },
-	{0X36636925, nullptr,                            "sceUsbCamReadMicBlocking",                '?', ""   },
-	{0X3DC0088E, nullptr,                            "sceUsbCamReadMic",                        '?', ""   },
-	{0X41EE8797, nullptr,                            "sceUsbCamUnregisterLensRotationCallback", '?', ""   },
-	{0X5145868A, nullptr,                            "sceUsbCamStopMic",                        '?', ""   },
-	{0X5778B452, nullptr,                            "sceUsbCamGetMicDataLength",               '?', ""   },
-	{0X6784E6A8, nullptr,                            "sceUsbCamSetAntiFlicker",                 '?', ""   },
-	{0XAA7D94BA, nullptr,                            "sceUsbCamGetAntiFlicker",                 '?', ""   },
-	{0XB048A67D, nullptr,                            "sceUsbCamWaitReadMicEnd",                 '?', ""   },
-	{0XD293A100, nullptr,                            "sceUsbCamRegisterLensRotationCallback",   '?', ""   },
-	{0XF8847F60, nullptr,                            "sceUsbCamPollReadMicEnd",                 '?', ""   },
-};
-
 void Register_sceUsb()
 {
 	RegisterModule("sceUsbstor", ARRAY_SIZE(sceUsbstor), sceUsbstor);
 	RegisterModule("sceUsbstorBoot", ARRAY_SIZE(sceUsbstorBoot), sceUsbstorBoot);
 	RegisterModule("sceUsb", ARRAY_SIZE(sceUsb), sceUsb);
-}
-
-void Register_sceUsbCam()
-{
-	RegisterModule("sceUsbCam", ARRAY_SIZE(sceUsbCam), sceUsbCam);
 }

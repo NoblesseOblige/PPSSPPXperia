@@ -1,14 +1,24 @@
 cmake_minimum_required(VERSION 2.8)
 project(armips) 
 
-if(NOT WIN32)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -std=c++11")
+option(ARMIPS_REGEXP "Enable regexp expression functions" ON)
+
+if(NOT WIN32 AND NOT ANDROID)
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 endif()
 
 set(ARMIPS_PATH ../../armips)
 
+if(ARMIPS_REGEXP)
+	add_definitions(-DARMIPS_REGEXP=1)
+endif()
+
+include_directories(${ARMIPS_PATH})
 
 add_library(armips
+	${ARMIPS_PATH}/stdafx.cpp
+	${ARMIPS_PATH}/stdafx.h
+
 	${ARMIPS_PATH}/Util/ByteArray.cpp
 	${ARMIPS_PATH}/Util/ByteArray.h
 	${ARMIPS_PATH}/Util/CRC.cpp
@@ -68,8 +78,10 @@ add_library(armips
 	${ARMIPS_PATH}/Archs/ARM/ArmOpcodes.h
 	${ARMIPS_PATH}/Archs/ARM/ArmParser.cpp
 	${ARMIPS_PATH}/Archs/ARM/ArmParser.h
-	${ARMIPS_PATH}/Archs/ARM/ArmRelocator.cpp
-	${ARMIPS_PATH}/Archs/ARM/ArmRelocator.h
+	${ARMIPS_PATH}/Archs/ARM/ArmElfRelocator.cpp
+	${ARMIPS_PATH}/Archs/ARM/ArmElfRelocator.h
+	${ARMIPS_PATH}/Archs/ARM/ArmExpressionFunctions.cpp
+	${ARMIPS_PATH}/Archs/ARM/ArmExpressionFunctions.h
 	${ARMIPS_PATH}/Archs/ARM/CArmInstruction.cpp
 	${ARMIPS_PATH}/Archs/ARM/CArmInstruction.h
 	${ARMIPS_PATH}/Archs/ARM/CThumbInstruction.cpp
@@ -85,6 +97,10 @@ add_library(armips
 	${ARMIPS_PATH}/Archs/MIPS/Mips.h
 	${ARMIPS_PATH}/Archs/MIPS/MipsElfFile.cpp
 	${ARMIPS_PATH}/Archs/MIPS/MipsElfFile.h
+	${ARMIPS_PATH}/Archs/MIPS/MipsElfRelocator.cpp
+	${ARMIPS_PATH}/Archs/MIPS/MipsElfRelocator.h
+	${ARMIPS_PATH}/Archs/MIPS/MipsExpressionFunctions.cpp
+	${ARMIPS_PATH}/Archs/MIPS/MipsExpressionFunctions.h
 	${ARMIPS_PATH}/Archs/MIPS/MipsMacros.cpp
 	${ARMIPS_PATH}/Archs/MIPS/MipsMacros.h
 	${ARMIPS_PATH}/Archs/MIPS/MipsOpcodes.cpp

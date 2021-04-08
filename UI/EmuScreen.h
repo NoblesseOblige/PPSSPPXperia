@@ -21,38 +21,46 @@
 #include <vector>
 #include <list>
 
-#include "input/keycodes.h"
-#include "ui/screen.h"
-#include "ui/ui_screen.h"
-#include "Common/KeyMap.h"
+#include "Common/Input/KeyCodes.h"
+#include "Common/UI/Screen.h"
+#include "Common/UI/UIScreen.h"
+#include "Common/UI/Tween.h"
+#include "Core/KeyMap.h"
 
 struct AxisInput;
 
 class AsyncImageFileView;
+class OnScreenMessagesView;
 
 class EmuScreen : public UIScreen {
 public:
 	EmuScreen(const std::string &filename);
 	~EmuScreen();
 
-	void update(InputState &input) override;
+	void update() override;
 	void render() override;
-	void deviceLost() override;
-	void deviceRestore() override;
+	void preRender() override;
+	void postRender() override;
 	void dialogFinished(const Screen *dialog, DialogResult result) override;
 	void sendMessage(const char *msg, const char *value) override;
+	void resized() override;
 
 	bool touch(const TouchInput &touch) override;
 	bool key(const KeyInput &key) override;
 	bool axis(const AxisInput &axis) override;
 
-protected:
+private:
 	void CreateViews() override;
 	UI::EventReturn OnDevTools(UI::EventParams &params);
+	UI::EventReturn OnDisableCardboard(UI::EventParams &params);
+	UI::EventReturn OnChat(UI::EventParams &params);
+	UI::EventReturn OnResume(UI::EventParams &params);
 
-private:
 	void bootGame(const std::string &filename);
+	bool bootAllowStorage(const std::string &filename);
 	void bootComplete();
+	bool hasVisibleUI();
+	void renderUI();
 	void processAxis(const AxisInput &axis, int direction);
 
 	void pspKey(int pspKeyCode, int flags);
@@ -61,17 +69,18 @@ private:
 	void setVKeyAnalogX(int stick, int virtualKeyMin, int virtualKeyMax);
 	void setVKeyAnalogY(int stick, int virtualKeyMin, int virtualKeyMax);
 
-	void releaseButtons();
-
 	void autoLoad();
 	void checkPowerDown();
 
+	UI::Event OnDevMenu;
+	UI::Event OnChatMenu;
 	bool bootPending_;
 	std::string gamePath_;
 
 	// Something invalid was loaded, don't try to emulate
 	bool invalid_;
 	bool quit_;
+	bool stopRender_ = false;
 	std::string errorMessage_;
 
 	// If set, pauses at the end of the frame.
@@ -91,4 +100,17 @@ private:
 	double saveStatePreviewShownTime_;
 	AsyncImageFileView *saveStatePreview_;
 	int saveStateSlot_;
+
+	UI::CallbackColorTween *loadingViewColor_ = nullptr;
+	UI::VisibilityTween *loadingViewVisible_ = nullptr;
+	UI::Spinner *loadingSpinner_ = nullptr;
+	UI::TextView *loadingTextView_ = nullptr;
+	UI::Button *resumeButton_ = nullptr;
+	UI::View *chatButton_ = nullptr;
+
+	UI::Button *cardboardDisableButton_ = nullptr;
+	OnScreenMessagesView *onScreenMessagesView_ = nullptr;
+
+	bool autoRotatingAnalogCW_ = false;
+	bool autoRotatingAnalogCCW_ = false;
 };

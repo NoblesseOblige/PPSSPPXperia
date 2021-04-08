@@ -17,4 +17,56 @@
 
 #pragma once
 
+#include "Core/HLE/FunctionWrappers.h"
+
 void Register_sceUsbGps();
+
+void __UsbGpsInit();
+void __UsbGpsDoState(PointerWrap &p);
+void __UsbGpsShutdown();
+
+#pragma pack(push, 1)
+
+typedef struct {
+	short year;
+	short month;
+	short date;
+	short hour;
+	short minute;
+	short second;
+	float garbage1;
+	float hdop;
+	float garbage2;
+	float latitude;
+	float longitude;
+	float altitude;
+	float garbage3;
+	float speed;
+	float bearing;
+} GpsData;
+
+typedef struct {
+	unsigned char   id;
+	unsigned char   elevation;
+	short           azimuth;
+	unsigned char   snr;
+	unsigned char   good;
+	short           garbage;
+} SatInfo;
+
+typedef struct {
+	short satellites_in_view;
+	short garbage;
+	SatInfo satInfo[24];
+} SatData;
+
+#pragma pack(pop)
+
+namespace GPS {
+	void init();
+	void setGpsTime(time_t *time);
+	void setGpsData(long long time, float hdop, float latitude, float longitude, float altitude, float speed, float bearing);
+	void setSatInfo(short index, unsigned char id, unsigned char elevation, short azimuth, unsigned char snr, unsigned char good);
+	GpsData *getGpsData();
+	SatData *getSatData();
+}

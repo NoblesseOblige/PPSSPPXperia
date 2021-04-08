@@ -17,7 +17,8 @@
 
 #include <algorithm>
 #include "Common/Common.h"
-#include "Common/ChunkFile.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Core/MemMapHelpers.h"
 #include "Core/Reporting.h"
@@ -35,6 +36,9 @@ const static u32 GAMEDATA_BYTES_PER_READ = 32768;
 // If this is too high, some games (e.g. Senjou no Valkyria 3) will lag.
 const static u32 GAMEDATA_READS_PER_UPDATE = 20;
 
+const u32 ERROR_UTILITY_GAMEDATA_MEMSTRICK_WRITE_PROTECTED = 0x80111903;
+const u32 ERROR_UTILITY_GAMEDATA_MEMSTRICK_REMOVED = 0x80111901;
+
 static const std::string SFO_FILENAME = "PARAM.SFO";
 
 namespace
@@ -51,7 +55,7 @@ namespace
 	}
 }
 
-PSPGamedataInstallDialog::PSPGamedataInstallDialog() {
+PSPGamedataInstallDialog::PSPGamedataInstallDialog(UtilityDialogType type) : PSPDialog(type) {
 }
 
 PSPGamedataInstallDialog::~PSPGamedataInstallDialog() {
@@ -95,6 +99,9 @@ int PSPGamedataInstallDialog::Init(u32 paramAddr) {
 int PSPGamedataInstallDialog::Update(int animSpeed) {
 	if (GetStatus() != SCE_UTILITY_STATUS_RUNNING)
 		return SCE_ERROR_UTILITY_INVALID_STATUS;
+
+	// TODO: This should return error codes in some cases, like write failure.
+	// request.common.result must be updated for errors as well.
 	
 	if (readFiles < numFiles) {
 		if (currentInputFile != 0 && currentOutputFile != 0) {
@@ -123,18 +130,20 @@ void PSPGamedataInstallDialog::OpenNextFile() {
 	std::string outputFileName = GetGameDataInstallFileName(&request, inFileNames[readFiles]);
 
 	currentInputFile = pspFileSystem.OpenFile(inputFileName, FILEACCESS_READ);
-	if (!currentInputFile) {
+	if (currentInputFile < 0) {
 		// TODO: Generate an error code?
 		ERROR_LOG_REPORT(SCEUTILITY, "Unable to read from install file: %s", inFileNames[readFiles].c_str());
 		++readFiles;
+		currentInputFile = 0;
 		return;
 	}
 	currentOutputFile = pspFileSystem.OpenFile(outputFileName, (FileAccess)(FILEACCESS_WRITE | FILEACCESS_CREATE | FILEACCESS_TRUNCATE));
-	if (!currentOutputFile) {
+	if (currentOutputFile < 0) {
 		// TODO: Generate an error code?
 		ERROR_LOG(SCEUTILITY, "Unable to write to install file: %s", inFileNames[readFiles].c_str());
 		pspFileSystem.CloseFile(currentInputFile);
 		currentInputFile = 0;
+		currentOutputFile = 0;
 		++readFiles;
 		return;
 	}
@@ -166,10 +175,12 @@ void PSPGamedataInstallDialog::CopyCurrentFileData() {
 }
 
 void PSPGamedataInstallDialog::CloseCurrentFile() {
-	pspFileSystem.CloseFile(currentOutputFile);
+	if (currentOutputFile >= 0)
+		pspFileSystem.CloseFile(currentOutputFile);
 	currentOutputFile = 0;
 
-	pspFileSystem.CloseFile(currentInputFile);
+	if (currentInputFile >= 0)
+		pspFileSystem.CloseFile(currentInputFile);
 	currentInputFile = 0;
 
 	++readFiles;
@@ -201,8 +212,8 @@ void PSPGamedataInstallDialog::WriteSfoFile() {
 	size_t sfoSize;
 	sfoFile.WriteSFO(&sfoData,&sfoSize);
 
-	u32 handle = pspFileSystem.OpenFile(sfopath, (FileAccess)(FILEACCESS_WRITE | FILEACCESS_CREATE | FILEACCESS_TRUNCATE));
-	if (handle != 0) {
+	int handle = pspFileSystem.OpenFile(sfopath, (FileAccess)(FILEACCESS_WRITE | FILEACCESS_CREATE | FILEACCESS_TRUNCATE));
+	if (handle >= 0) {
 		pspFileSystem.WriteFile(handle, sfoData, sfoSize);
 		pspFileSystem.CloseFile(handle);
 	}
@@ -244,31 +255,31 @@ void PSPGamedataInstallDialog::UpdateProgress() {
 }
 
 void PSPGamedataInstallDialog::DoState(PointerWrap &p) {
-	auto s = p.Section("PSPGamedataInstallDialog", 0, 3);
+	auto s = p.Section("PSPGamedataInstallDialog", 0, 4);
 	if (!s)
 		return;
 
 	// This was included in version 1 and higher.
 	PSPDialog::DoState(p);
-	p.Do(request);
+	Do(p, request);
 
-	// This was included in version 2 and higher.
-	if (s > 2) {
-		p.Do(param.ptr);
-		p.Do(inFileNames);
-		p.Do(numFiles);
-		p.Do(readFiles);
-		p.Do(allFilesSize);
-		p.Do(allReadSize);
-		p.Do(progressValue);
+	// This was included in version 2 and higher, but for BC reasons we use 3+.
+	if (s >= 3) {
+		Do(p, param.ptr);
+		Do(p, inFileNames);
+		Do(p, numFiles);
+		Do(p, readFiles);
+		Do(p, allFilesSize);
+		Do(p, allReadSize);
+		Do(p, progressValue);
 	} else {
 		param.ptr = 0;
 	}
 
-	if (s > 3) {
-		p.Do(currentInputFile);
-		p.Do(currentInputBytesLeft);
-		p.Do(currentOutputFile);
+	if (s >= 4) {
+		Do(p, currentInputFile);
+		Do(p, currentInputBytesLeft);
+		Do(p, currentOutputFile);
 	} else {
 		currentInputFile = 0;
 		currentInputBytesLeft = 0;

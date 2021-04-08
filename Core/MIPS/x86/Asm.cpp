@@ -18,7 +18,7 @@
 #include "ppsspp_config.h"
 #if PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)
 
-#include "math/math_util.h"
+#include "Common/Math/math_util.h"
 
 #include "ABI.h"
 #include "x64Emitter.h"
@@ -66,25 +66,25 @@ void ImHere() {
 }
 
 void Jit::GenerateFixedCode(JitOptions &jo) {
-	const u8 *start = AlignCodePage();
+	AlignCodePage();
 	BeginWrite();
 
 	restoreRoundingMode = AlignCode16(); {
-		STMXCSR(M(&mips_->temp));
+		STMXCSR(MIPSSTATE_VAR(temp));
 		// Clear the rounding mode and flush-to-zero bits back to 0.
-		AND(32, M(&mips_->temp), Imm32(~(7 << 13)));
-		LDMXCSR(M(&mips_->temp));
+		AND(32, MIPSSTATE_VAR(temp), Imm32(~(7 << 13)));
+		LDMXCSR(MIPSSTATE_VAR(temp));
 		RET();
 	}
 
 	applyRoundingMode = AlignCode16(); {
-		MOV(32, R(EAX), M(&mips_->fcr31));
+		MOV(32, R(EAX), MIPSSTATE_VAR(fcr31));
 		AND(32, R(EAX), Imm32(0x01000003));
 
 		// If it's 0 (nearest + no flush0), we don't actually bother setting - we cleared the rounding
 		// mode out in restoreRoundingMode anyway. This is the most common.
 		FixupBranch skip = J_CC(CC_Z);
-		STMXCSR(M(&mips_->temp));
+		STMXCSR(MIPSSTATE_VAR(temp));
 
 		// The MIPS bits don't correspond exactly, so we have to adjust.
 		// 0 -> 0 (skip2), 1 -> 3, 2 -> 2 (skip2), 3 -> 1
@@ -96,39 +96,22 @@ void Jit::GenerateFixedCode(JitOptions &jo) {
 		// Adjustment complete, now reconstruct MXCSR
 		SHL(32, R(EAX), Imm8(13));
 		// Before setting new bits, we must clear the old ones.
-		AND(32, M(&mips_->temp), Imm32(~(7 << 13)));   // Clearing bits 13-14 (rounding mode) and 15 (flush to zero)
-		OR(32, M(&mips_->temp), R(EAX));
+		AND(32, MIPSSTATE_VAR(temp), Imm32(~(7 << 13)));   // Clearing bits 13-14 (rounding mode) and 15 (flush to zero)
+		OR(32, MIPSSTATE_VAR(temp), R(EAX));
 
-		TEST(32, M(&mips_->fcr31), Imm32(1 << 24));
+		TEST(32, MIPSSTATE_VAR(fcr31), Imm32(1 << 24));
 		FixupBranch skip3 = J_CC(CC_Z);
-		OR(32, M(&mips_->temp), Imm32(1 << 15));
+		OR(32, MIPSSTATE_VAR(temp), Imm32(1 << 15));
 		SetJumpTarget(skip3);
 
-		LDMXCSR(M(&mips_->temp));
+		LDMXCSR(MIPSSTATE_VAR(temp));
 		SetJumpTarget(skip);
-		RET();
-	}
-
-	updateRoundingMode = AlignCode16(); {
-		// If it's only ever 0, we don't actually bother applying or restoring it.
-		// This is the most common situation.
-		TEST(32, M(&mips_->fcr31), Imm32(0x01000003));
-		FixupBranch skip = J_CC(CC_Z);
-#ifdef _M_X64
-		// TODO: Move the hasSetRounding flag somewhere we can reach it through the context pointer, or something.
-		MOV(64, R(RAX), Imm64((uintptr_t)&js.hasSetRounding));
-		MOV(8, MatR(RAX), Imm8(1));
-#else
-		MOV(8, M(&js.hasSetRounding), Imm8(1));
-#endif
-		SetJumpTarget(skip);
-
 		RET();
 	}
 
 	enterDispatcher = AlignCode16();
 	ABI_PushAllCalleeSavedRegsAndAdjustStack();
-#ifdef _M_X64
+#if PPSSPP_ARCH(AMD64)
 	// Two statically allocated registers.
 	MOV(64, R(MEMBASEREG), ImmPtr(Memory::base));
 	uintptr_t jitbase = (uintptr_t)GetBasePtr();
@@ -144,7 +127,7 @@ void Jit::GenerateFixedCode(JitOptions &jo) {
 		RestoreRoundingMode(true);
 		ABI_CallFunction(reinterpret_cast<void *>(&CoreTiming::Advance));
 		ApplyRoundingMode(true);
-		FixupBranch skipToRealDispatch = J(); //skip the sync and compare first time
+		FixupBranch skipToCoreStateCheck = J();  //skip the downcount check
 
 		dispatcherCheckCoreState = GetCodePtr();
 
@@ -152,7 +135,13 @@ void Jit::GenerateFixedCode(JitOptions &jo) {
 		// IMPORTANT - We jump on negative, not carry!!!
 		FixupBranch bailCoreState = J_CC(CC_S, true);
 
-		CMP(32, M(&coreState), Imm32(0));
+		SetJumpTarget(skipToCoreStateCheck);
+		if (RipAccessible((const void *)&coreState)) {
+			CMP(32, M(&coreState), Imm32(0));  // rip accessible
+		} else {
+			MOV(PTRBITS, R(RAX), ImmPtr((const void *)&coreState));
+			CMP(32, MatR(RAX), Imm32(0));
+		}
 		FixupBranch badCoreState = J_CC(CC_NZ, true);
 		FixupBranch skipToRealDispatch2 = J(); //skip the sync and compare first time
 
@@ -162,35 +151,36 @@ void Jit::GenerateFixedCode(JitOptions &jo) {
 			// IMPORTANT - We jump on negative, not carry!!!
 			FixupBranch bail = J_CC(CC_S, true);
 
-			SetJumpTarget(skipToRealDispatch);
 			SetJumpTarget(skipToRealDispatch2);
 
 			dispatcherNoCheck = GetCodePtr();
 
-			MOV(32, R(EAX), M(&mips_->pc));
+			MOV(32, R(EAX), MIPSSTATE_VAR(pc));
 			dispatcherInEAXNoCheck = GetCodePtr();
 
-#ifdef _M_IX86
+#ifdef MASKED_PSP_MEMORY
 			AND(32, R(EAX), Imm32(Memory::MEMVIEW32_MASK));
-			_assert_msg_(CPU, Memory::base != 0, "Memory base bogus");
+#endif
+			dispatcherFetch = GetCodePtr();
+#if PPSSPP_ARCH(X86)
+			_assert_msg_( Memory::base != 0, "Memory base bogus");
 			MOV(32, R(EAX), MDisp(EAX, (u32)Memory::base));
-#elif _M_X64
+#elif PPSSPP_ARCH(AMD64)
 			MOV(32, R(EAX), MComplex(MEMBASEREG, RAX, SCALE_1, 0));
 #endif
 			MOV(32, R(EDX), R(EAX));
-			_assert_msg_(JIT, MIPS_JITBLOCK_MASK == 0xFF000000, "Hardcoded assumption of emuhack mask");
+			_assert_msg_(MIPS_JITBLOCK_MASK == 0xFF000000, "Hardcoded assumption of emuhack mask");
 			SHR(32, R(EDX), Imm8(24));
 			CMP(32, R(EDX), Imm8(MIPS_EMUHACK_OPCODE >> 24));
 			FixupBranch notfound = J_CC(CC_NE);
-				if (enableDebug)
-				{
-					ADD(32, M(&mips_->debugCount), Imm8(1));
+				if (enableDebug) {
+					ADD(32, MIPSSTATE_VAR(debugCount), Imm8(1));
 				}
 				//grab from list and jump to it
 				AND(32, R(EAX), Imm32(MIPS_EMUHACK_VALUE_MASK));
-#ifdef _M_IX86
+#if PPSSPP_ARCH(X86)
 				ADD(32, R(EAX), ImmPtr(GetBasePtr()));
-#elif _M_X64
+#elif PPSSPP_ARCH(AMD64)
 				if (jo.reserveR15ForAsm)
 					ADD(64, R(RAX), R(JITBASEREG));
 				else
@@ -208,18 +198,28 @@ void Jit::GenerateFixedCode(JitOptions &jo) {
 		SetJumpTarget(bail);
 		SetJumpTarget(bailCoreState);
 
-		CMP(32, M(&coreState), Imm32(0));
+		if (RipAccessible((const void *)&coreState)) {
+			CMP(32, M(&coreState), Imm32(0));  // rip accessible
+		} else {
+			MOV(PTRBITS, R(RAX), ImmPtr((const void *)&coreState));
+			CMP(32, MatR(RAX), Imm32(0));
+		}
 		J_CC(CC_Z, outerLoop, true);
 
+	const uint8_t *quitLoop = GetCodePtr();
 	SetJumpTarget(badCoreState);
 	RestoreRoundingMode(true);
 	ABI_PopAllCalleeSavedRegsAndAdjustStack();
 	RET();
 
-	breakpointBailout = GetCodePtr();
-	RestoreRoundingMode(true);
-	ABI_PopAllCalleeSavedRegsAndAdjustStack();
-	RET();
+	crashHandler = GetCodePtr();
+	if (RipAccessible((const void *)&coreState)) {
+		MOV(32, M(&coreState), Imm32(CORE_RUNTIME_ERROR));
+	} else {
+		MOV(PTRBITS, R(RAX), ImmPtr((const void *)&coreState));
+		MOV(32, MatR(RAX), Imm32(CORE_RUNTIME_ERROR));
+	}
+	JMP(quitLoop, true);
 
 	// Let's spare the pre-generated code from unprotect-reprotect.
 	endOfPregeneratedCode = AlignCodePage();

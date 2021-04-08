@@ -15,6 +15,9 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+
+// TODO: Implement https://github.com/dolphin-emu/dolphin/pull/1025/commits/b597ec3e081a289d9ac782586617a876535183d6 .
+
 #pragma once
 
 #include "Common/CommonTypes.h"
@@ -36,7 +39,6 @@ namespace MIPSComp {
 // This is called when Jit hits a breakpoint.  Returns 1 when hit.
 u32 JitBreakpoint();
 
-// TODO: Hmm, humongous.
 struct RegCacheState {
 	GPRRegCacheState gpr;
 	FPURegCacheState fpr;
@@ -44,13 +46,12 @@ struct RegCacheState {
 
 class Jit : public Gen::XCodeBlock, public JitInterface, public MIPSFrontendInterface {
 public:
-	Jit(MIPSState *mips);
+	Jit(MIPSState *mipsState);
 	virtual ~Jit();
 
 	const JitOptions &GetJitOptions() { return jo; }
 
 	void DoState(PointerWrap &p) override;
-	void DoDummyState(PointerWrap &p) override;
 
 	// Compiled ops should ignore delay slots
 	// the compiler will take care of them by itself
@@ -62,6 +63,8 @@ public:
 	void Compile(u32 em_address) override;	// Compiles a block at current MIPS PC
 	const u8 *DoJit(u32 em_address, JitBlock *b);
 
+	const u8 *GetCrashHandler() const override { return crashHandler; }
+	bool CodeInRange(const u8 *ptr) const override { return IsInSpace(ptr); }
 	bool DescribeCodePtr(const u8 *ptr, std::string &name) override;
 
 	void Comp_RunBlock(MIPSOpcode op) override;
@@ -154,21 +157,23 @@ public:
 
 	void RestoreRoundingMode(bool force = false);
 	void ApplyRoundingMode(bool force = false);
-	void UpdateRoundingMode();
+	void UpdateRoundingMode(u32 fcr31 = -1);
 
 	JitBlockCache *GetBlockCache() override { return &blocks; }
+	JitBlockCacheDebugInterface *GetBlockCacheDebugInterface() override { return &blocks; }
+
 	MIPSOpcode GetOriginalOp(MIPSOpcode op) override;
 
 	std::vector<u32> SaveAndClearEmuHackOps() override { return blocks.SaveAndClearEmuHackOps(); }
 	void RestoreSavedEmuHackOps(std::vector<u32> saved) override { blocks.RestoreSavedEmuHackOps(saved); }
 
 	void ClearCache() override;
-	void InvalidateCache() override;
 	void InvalidateCacheAt(u32 em_address, int length = 4) override {
 		if (blocks.RangeMayHaveEmuHacks(em_address, em_address + length)) {
 			blocks.InvalidateICache(em_address, length);
 		}
 	}
+	void UpdateFCR31() override;
 
 	const u8 *GetDispatcher() const override {
 		return dispatcher;
@@ -294,6 +299,13 @@ private:
 		return true;
 	}
 
+	bool IsAtDispatchFetch(const u8 *codePtr) const override {
+		return codePtr == dispatcherFetch;
+	}
+
+	void SaveFlags();
+	void LoadFlags();
+
 	JitBlockCache blocks;
 	JitOptions jo;
 	JitState js;
@@ -314,14 +326,14 @@ private:
 	const u8 *dispatcherCheckCoreState;
 	const u8 *dispatcherNoCheck;
 	const u8 *dispatcherInEAXNoCheck;
-
-	const u8 *breakpointBailout;
+	const u8 *dispatcherFetch;
 
 	const u8 *restoreRoundingMode;
 	const u8 *applyRoundingMode;
-	const u8 *updateRoundingMode;
 
 	const u8 *endOfPregeneratedCode;
+
+	const u8 *crashHandler;
 
 	friend class JitSafeMem;
 	friend class JitSafeMemFuncs;

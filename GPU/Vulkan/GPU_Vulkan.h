@@ -17,146 +17,76 @@
 
 #pragma once
 
-#include <list>
-#include <deque>
+#include <string>
+#include <vector>
 
 #include "GPU/GPUCommon.h"
 #include "GPU/Vulkan/DrawEngineVulkan.h"
 #include "GPU/Vulkan/PipelineManagerVulkan.h"
-#include "GPU/Vulkan/TextureCacheVulkan.h"
 #include "GPU/Vulkan/DepalettizeShaderVulkan.h"
 
 class FramebufferManagerVulkan;
 class ShaderManagerVulkan;
 class LinkedShader;
+class TextureCacheVulkan;
 
 class GPU_Vulkan : public GPUCommon {
 public:
-	GPU_Vulkan(GraphicsContext *ctx);
+	GPU_Vulkan(GraphicsContext *gfxCtx, Draw::DrawContext *draw);
 	~GPU_Vulkan();
 
 	// This gets called on startup and when we get back from settings.
-	void CheckGPUFeatures();
+	void CheckGPUFeatures() override;
+
+	bool IsReady() override;
+	void CancelReady() override;
 
 	// These are where we can reset command buffers etc.
 	void BeginHostFrame() override;
 	void EndHostFrame() override;
 
 	void PreExecuteOp(u32 op, u32 diff) override;
-	void Execute_Generic(u32 op, u32 diff);
 	void ExecuteOp(u32 op, u32 diff) override;
 
 	void SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) override;
-	void BeginFrame() override;
 	void GetStats(char *buffer, size_t bufsize) override;
 	void ClearCacheNextFrame() override;
 	void DeviceLost() override;  // Only happens on Android. Drop all textures and shaders.
 	void DeviceRestore() override;
 
-	void DumpNextFrame() override;
 	void DoState(PointerWrap &p) override;
 
 	void ClearShaderCache() override;
-	bool DecodeTexture(u8 *dest, const GPUgstate &state) override {
-		return false;
-	}
-	bool FramebufferDirty() override;
-	bool FramebufferReallyDirty() override;
-
-	void GetReportingInfo(std::string &primaryInfo, std::string &fullInfo) override {
-		primaryInfo = reportingPrimaryInfo_;
-		fullInfo = reportingFullInfo_;
-	}
-
-	typedef void (GPU_Vulkan::*CmdFunc)(u32 op, u32 diff);
-	struct CommandInfo {
-		u8 flags;
-		GPU_Vulkan::CmdFunc func;
-	};
-	
-	void Execute_Vaddr(u32 op, u32 diff);
-	void Execute_Iaddr(u32 op, u32 diff);
-	void Execute_Prim(u32 op, u32 diff);
-	void Execute_Bezier(u32 op, u32 diff);
-	void Execute_Spline(u32 op, u32 diff);
-	void Execute_BoundingBox(u32 op, u32 diff);
-	void Execute_VertexType(u32 op, u32 diff);
-	void Execute_Region(u32 op, u32 diff);
-	void Execute_Scissor(u32 op, u32 diff);
-	void Execute_FramebufType(u32 op, u32 diff);
-	void Execute_ViewportType(u32 op, u32 diff);
-	void Execute_ViewportZType(u32 op, u32 diff);
-	void Execute_TexScaleU(u32 op, u32 diff);
-	void Execute_TexScaleV(u32 op, u32 diff);
-	void Execute_TexOffsetU(u32 op, u32 diff);
-	void Execute_TexOffsetV(u32 op, u32 diff);
-	void Execute_TexAddr0(u32 op, u32 diff);
-	void Execute_TexAddrN(u32 op, u32 diff);
-	void Execute_TexBufw0(u32 op, u32 diff);
-	void Execute_TexBufwN(u32 op, u32 diff);
-	void Execute_TexSize0(u32 op, u32 diff);
-	void Execute_TexSizeN(u32 op, u32 diff);
-	void Execute_TexFormat(u32 op, u32 diff);
-	void Execute_TexMapMode(u32 op, u32 diff);
-	void Execute_TexParamType(u32 op, u32 diff);
-	void Execute_TexEnvColor(u32 op, u32 diff);
-	void Execute_TexLevel(u32 op, u32 diff);
-	void Execute_LoadClut(u32 op, u32 diff);
-	void Execute_ClutFormat(u32 op, u32 diff);
-	void Execute_Ambient(u32 op, u32 diff);
-	void Execute_MaterialDiffuse(u32 op, u32 diff);
-	void Execute_MaterialEmissive(u32 op, u32 diff);
-	void Execute_MaterialAmbient(u32 op, u32 diff);
-	void Execute_MaterialSpecular(u32 op, u32 diff);
-	void Execute_Light0Param(u32 op, u32 diff);
-	void Execute_Light1Param(u32 op, u32 diff);
-	void Execute_Light2Param(u32 op, u32 diff);
-	void Execute_Light3Param(u32 op, u32 diff);
-	void Execute_FogColor(u32 op, u32 diff);
-	void Execute_FogCoef(u32 op, u32 diff);
-	void Execute_ColorTestMask(u32 op, u32 diff);
-	void Execute_AlphaTest(u32 op, u32 diff);
-	void Execute_StencilTest(u32 op, u32 diff);
-	void Execute_ColorRef(u32 op, u32 diff);
-	void Execute_WorldMtxNum(u32 op, u32 diff);
-	void Execute_WorldMtxData(u32 op, u32 diff);
-	void Execute_ViewMtxNum(u32 op, u32 diff);
-	void Execute_ViewMtxData(u32 op, u32 diff);
-	void Execute_ProjMtxNum(u32 op, u32 diff);
-	void Execute_ProjMtxData(u32 op, u32 diff);
-	void Execute_TgenMtxNum(u32 op, u32 diff);
-	void Execute_TgenMtxData(u32 op, u32 diff);
-	void Execute_BoneMtxNum(u32 op, u32 diff);
-	void Execute_BoneMtxData(u32 op, u32 diff);
-	void Execute_BlockTransferStart(u32 op, u32 diff);
 
 	// Using string because it's generic - makes no assumptions on the size of the shader IDs of this backend.
 	std::vector<std::string> DebugGetShaderIDs(DebugShaderType shader) override;
 	std::string DebugGetShaderString(std::string id, DebugShaderType shader, DebugShaderStringType stringType) override;
-	std::vector<FramebufferInfo> GetFramebufferList() override;
-	bool GetCurrentSimpleVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices) override;
-	bool DescribeCodePtr(const u8 *ptr, std::string &name) override;
+
+	TextureCacheVulkan *GetTextureCache() {
+		return textureCacheVulkan_;
+	}
+
+	std::string GetGpuProfileString();
 
 protected:
-	void FastRunLoop(DisplayList &list) override;
-	void FastLoadBoneMatrix(u32 target) override;
 	void FinishDeferred() override;
 
 private:
 	void Flush() {
-		drawEngine_.Flush(nullptr);
+		drawEngine_.Flush();
 	}
 	void CheckFlushOp(int cmd, u32 diff);
 	void BuildReportingInfo();
-	void InitClearInternal() override;
-	void BeginFrameInternal() override;
-	void CopyDisplayToOutputInternal() override;
-	void ReinitializeInternal() override;
-	inline void UpdateVsyncInterval(bool force);
-	void UpdateCmdInfo();
-	static CommandInfo cmdInfo_[256];
+	void InitClear() override;
+	void CopyDisplayToOutput(bool reallyDirty) override;
+	void Reinitialize() override;
 
-	GraphicsContext *gfxCtx_;
+	void InitDeviceObjects();
+	void DestroyDeviceObjects();
+
+	void LoadCache(std::string filename);
+	void SaveCache(std::string filename);
+
 	VulkanContext *vulkan_;
 	FramebufferManagerVulkan *framebufferManagerVulkan_;
 	TextureCacheVulkan *textureCacheVulkan_;
@@ -164,14 +94,20 @@ private:
 	DrawEngineVulkan drawEngine_;
 
 	// Manages shaders and UBO data
-	ShaderManagerVulkan *shaderManager_;
+	ShaderManagerVulkan *shaderManagerVulkan_;
 
 	// Manages state and pipeline objects
 	PipelineManagerVulkan *pipelineManager_;
 
-	int lastVsync_;
-	VkCommandBuffer curCmd_;
+	// Simple 2D drawing engine.
+	Vulkan2D vulkan2D_;
 
-	std::string reportingPrimaryInfo_;
-	std::string reportingFullInfo_;
+	struct FrameData {
+		VulkanPushBuffer *push_;
+	};
+
+	FrameData frameData_[VulkanContext::MAX_INFLIGHT_FRAMES]{};
+
+	std::string shaderCachePath_;
+	bool shaderCacheLoaded_ = false;
 };

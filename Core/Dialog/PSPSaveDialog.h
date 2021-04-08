@@ -17,8 +17,9 @@
 
 #pragma once
 
-#include "thread/thread.h"
-#include "base/mutex.h"
+#include <thread>
+#include <mutex>
+
 #include "Core/Dialog/PSPDialog.h"
 #include "Core/Dialog/SavedataParam.h"
 
@@ -30,6 +31,7 @@
 #define SCE_UTILITY_SAVEDATA_ERROR_LOAD_DATA_BROKEN     (0x80110306)
 #define SCE_UTILITY_SAVEDATA_ERROR_LOAD_NO_DATA         (0x80110307)
 #define SCE_UTILITY_SAVEDATA_ERROR_LOAD_PARAM           (0x80110308)
+#define SCE_UTILITY_SAVEDATA_ERROR_LOAD_FILE_NOT_FOUND  (0x80110309)
 #define SCE_UTILITY_SAVEDATA_ERROR_LOAD_INTERNAL        (0x8011030b)
 
 #define SCE_UTILITY_SAVEDATA_ERROR_RW_NO_MEMSTICK       (0x80110321)
@@ -69,7 +71,7 @@
 
 class PSPSaveDialog: public PSPDialog {
 public:
-	PSPSaveDialog();
+	PSPSaveDialog(UtilityDialogType type);
 	virtual ~PSPSaveDialog();
 
 	virtual int Init(int paramAddr);
@@ -89,9 +91,9 @@ private:
 
 	void DisplayBanner(int which);
 	void DisplaySaveList(bool canMove = true);
-	void DisplaySaveIcon();
+	void DisplaySaveIcon(bool checkExists);
 	void DisplaySaveDataInfo1();
-	void DisplaySaveDataInfo2();
+	void DisplaySaveDataInfo2(bool showNewData = false);
 	void DisplayMessage(std::string text, bool hasYesNo = false);
 	const std::string GetSelectedSaveDirName() const;
 
@@ -134,14 +136,14 @@ private:
 		DB_DELETE
 	};
 
-	DisplayState display;
+	DisplayState display = DS_NONE;
 
 	SavedataParam param;
 	SceUtilitySavedataParam request;
 	// For detecting changes made by the game.
 	SceUtilitySavedataParam originalRequest;
-	u32 requestAddr;
-	int currentSelectedSave;
+	u32 requestAddr = 0;
+	int currentSelectedSave = 0;
 
 	int yesnoChoice;
 
@@ -152,8 +154,8 @@ private:
 		SAVEIO_DONE,
 	};
 
-	std::thread *ioThread;
-	recursive_mutex paramLock;
+	std::thread *ioThread = nullptr;
+	std::mutex paramLock;
 	volatile SaveIOStatus ioThreadStatus;
 };
 

@@ -17,11 +17,13 @@
 
 #pragma once
 
+#include "ppsspp_config.h"
+#include <mutex>
 #include "Common/CommonTypes.h"
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/MIPS/MIPSAnalyst.h"
 
-#ifdef _M_X64
+#if PPSSPP_ARCH(AMD64)
 typedef u64 HashType;
 #else
 typedef u32 HashType;
@@ -62,7 +64,7 @@ public:
 	virtual int getLineNum(u32 address, bool findStart) = 0;
 	virtual u32 getLineAddress(int line) = 0;
 	virtual u32 getTotalSize() = 0;
-	virtual bool disassemble(u32 address, DisassemblyLineInfo& dest, bool insertSymbols) = 0;
+	virtual bool disassemble(u32 address, DisassemblyLineInfo& dest, bool insertSymbols, DebugInterface *cpuDebug) = 0;
 	virtual void getBranchLines(u32 start, u32 size, std::vector<BranchLine>& dest) { };
 };
 
@@ -70,12 +72,13 @@ class DisassemblyFunction: public DisassemblyEntry
 {
 public:
 	DisassemblyFunction(u32 _address, u32 _size);
+	~DisassemblyFunction();
 	void recheck() override;
 	int getNumLines() override;
 	int getLineNum(u32 address, bool findStart) override;
 	u32 getLineAddress(int line) override;
 	u32 getTotalSize() override { return size; };
-	bool disassemble(u32 address, DisassemblyLineInfo& dest, bool insertSymbols) override;
+	bool disassemble(u32 address, DisassemblyLineInfo& dest, bool insertSymbols, DebugInterface *cpuDebug) override;
 	void getBranchLines(u32 start, u32 size, std::vector<BranchLine>& dest) override;
 
 private:
@@ -90,6 +93,7 @@ private:
 	std::vector<BranchLine> lines;
 	std::map<u32,DisassemblyEntry*> entries;
 	std::vector<u32> lineAddresses;
+	std::recursive_mutex lock_;
 };
 
 class DisassemblyOpcode: public DisassemblyEntry
@@ -102,7 +106,7 @@ public:
 	int getLineNum(u32 address, bool findStart) override { return (address - this->address) / 4; };
 	u32 getLineAddress(int line) override { return address + line * 4; };
 	u32 getTotalSize() override { return num * 4; };
-	bool disassemble(u32 address, DisassemblyLineInfo& dest, bool insertSymbols) override;
+	bool disassemble(u32 address, DisassemblyLineInfo& dest, bool insertSymbols, DebugInterface *cpuDebug) override;
 	void getBranchLines(u32 start, u32 size, std::vector<BranchLine>& dest) override;
 
 private:
@@ -125,7 +129,7 @@ public:
 	int getLineNum(u32 address, bool findStart) override { return 0; };
 	u32 getLineAddress(int line) override { return address; };
 	u32 getTotalSize() override { return numOpcodes * 4; };
-	bool disassemble(u32 address, DisassemblyLineInfo& dest, bool insertSymbols) override;
+	bool disassemble(u32 address, DisassemblyLineInfo& dest, bool insertSymbols, DebugInterface *cpuDebug) override;
 private:
 	enum MacroType { MACRO_LI, MACRO_MEMORYIMM };
 
@@ -150,7 +154,7 @@ public:
 	int getLineNum(u32 address, bool findStart) override;
 	u32 getLineAddress(int line) override { return lineAddresses[line]; };
 	u32 getTotalSize() override { return size; };
-	bool disassemble(u32 address, DisassemblyLineInfo& dest, bool insertSymbols) override;
+	bool disassemble(u32 address, DisassemblyLineInfo& dest, bool insertSymbols, DebugInterface *cpuDebug) override;
 
 private:
 	void createLines();
@@ -168,6 +172,7 @@ private:
 	DataType type;
 	std::map<u32,DataEntry> lines;
 	std::vector<u32> lineAddresses;
+	std::recursive_mutex lock_;
 };
 
 class DisassemblyComment: public DisassemblyEntry
@@ -181,7 +186,7 @@ public:
 	int getLineNum(u32 address, bool findStart) override { return 0; };
 	u32 getLineAddress(int line) override { return address; };
 	u32 getTotalSize() override { return size; };
-	bool disassemble(u32 address, DisassemblyLineInfo& dest, bool insertSymbols) override;
+	bool disassemble(u32 address, DisassemblyLineInfo& dest, bool insertSymbols, DebugInterface *cpuDebug) override;
 
 private:
 	u32 address;
@@ -195,11 +200,13 @@ class DebugInterface;
 class DisassemblyManager
 {
 public:
+	~DisassemblyManager();
+
 	void clear();
 
 	void setCpu(DebugInterface* _cpu) { cpu = _cpu; };
 	void setMaxParamChars(int num) { maxParamChars = num; clear(); };
-	void getLine(u32 address, bool insertSymbols, DisassemblyLineInfo& dest);
+	void getLine(u32 address, bool insertSymbols, DisassemblyLineInfo &dest, DebugInterface *cpuDebug = nullptr);
 	void analyze(u32 address, u32 size);
 	std::vector<BranchLine> getBranchLines(u32 start, u32 size);
 
@@ -211,6 +218,7 @@ public:
 	static int getMaxParamChars() { return maxParamChars; };
 private:
 	static std::map<u32,DisassemblyEntry*> entries;
+	static std::recursive_mutex entriesLock_;
 	static DebugInterface* cpu;
 	static int maxParamChars;
 };

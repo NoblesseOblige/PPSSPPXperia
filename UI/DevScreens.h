@@ -19,18 +19,20 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
-#include "file/file_util.h"
-#include "ui/ui_screen.h"
+#include "Common/Data/Text/I18n.h"
+#include "Common/Net/HTTPClient.h"
+#include "Common/UI/UIScreen.h"
 
 #include "UI/MiscScreens.h"
 #include "GPU/Common/ShaderCommon.h"
 
 class DevMenu : public PopupScreen {
 public:
-	DevMenu() : PopupScreen("Dev Tools") {}
+	DevMenu(std::shared_ptr<I18NCategory> i18n) : PopupScreen(i18n->T("Dev Tools")) {}
 
 	void CreatePopupContents(UI::ViewGroup *parent) override;
 	void dialogFinished(const Screen *dialog, DialogResult result) override;
@@ -44,6 +46,17 @@ protected:
 	UI::EventReturn OnDumpFrame(UI::EventParams &e);
 	UI::EventReturn OnDeveloperTools(UI::EventParams &e);
 	UI::EventReturn OnToggleAudioDebug(UI::EventParams &e);
+	UI::EventReturn OnResetLimitedLogging(UI::EventParams &e);
+};
+
+class JitDebugScreen : public UIDialogScreenWithBackground {
+public:
+	JitDebugScreen() {}
+	virtual void CreateViews() override;
+
+private:
+	UI::EventReturn OnEnableAll(UI::EventParams &e);
+	UI::EventReturn OnDisableAll(UI::EventParams &e);
 };
 
 class LogConfigScreen : public UIDialogScreenWithBackground {
@@ -53,6 +66,8 @@ public:
 
 private:
 	UI::EventReturn OnToggleAll(UI::EventParams &e);
+	UI::EventReturn OnEnableAll(UI::EventParams &e);
+	UI::EventReturn OnDisableAll(UI::EventParams &e);
 	UI::EventReturn OnLogLevel(UI::EventParams &e);
 	UI::EventReturn OnLogLevelChange(UI::EventParams &e);
 };
@@ -61,7 +76,7 @@ class LogScreen : public UIDialogScreenWithBackground {
 public:
 	LogScreen() : toBottom_(false) {}
 	void CreateViews() override;
-	void update(InputState &input) override;
+	void update() override;
 
 private:
 	void UpdateLog();
@@ -84,7 +99,7 @@ private:
 class SystemInfoScreen : public UIDialogScreenWithBackground {
 public:
 	SystemInfoScreen() {}
-	virtual void CreateViews();
+	void CreateViews() override;
 };
 
 class AddressPromptScreen : public PopupScreen {
@@ -149,7 +164,7 @@ public:
 	void CreateViews() override;
 
 private:
-	void ListShaders(DebugShaderType shaderType, UI::LinearLayout *view);
+	int ListShaders(DebugShaderType shaderType, UI::LinearLayout *view);
 
 	UI::EventReturn OnShaderClick(UI::EventParams &e);
 
@@ -167,4 +182,21 @@ private:
 	DebugShaderType type_;
 };
 
+class FrameDumpTestScreen : public UIDialogScreenWithBackground {
+public:
+	FrameDumpTestScreen();
+	~FrameDumpTestScreen();
+
+	void CreateViews() override;
+	void update() override;
+
+private:
+	UI::EventReturn OnLoadDump(UI::EventParams &e);
+
+	std::vector<std::string> files_;
+	std::shared_ptr<http::Download> listing_;
+	std::shared_ptr<http::Download> dumpDownload_;
+};
+
 void DrawProfile(UIContext &ui);
+const char *GetCompilerABI();

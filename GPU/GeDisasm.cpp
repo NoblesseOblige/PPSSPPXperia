@@ -15,9 +15,10 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include "Core/MemMap.h"
+#include <cstdio>
 
-#include "ge_constants.h"
+#include "Core/MemMap.h"
+#include "GPU/ge_constants.h"
 #include "GPU/GPU.h"
 #include "GPU/GPUState.h"
 
@@ -102,6 +103,15 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer, int bufsize) {
 			snprintf(buffer, bufsize, "NOP");
 		break;
 
+		// Pretty sure this is some sort of NOP to eat some pipelining issue,
+		// often seen after CALL instructions.
+	case GE_CMD_NOP_FF:
+		if (data != 0)
+			snprintf(buffer, bufsize, "NOP_FF: data= %06x", data);
+		else
+			snprintf(buffer, bufsize, "NOP_FF");
+		break;
+
 	case GE_CMD_BASE:
 		snprintf(buffer, bufsize, "BASE: %06x", data);
 		break;
@@ -135,7 +145,6 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer, int bufsize) {
 		}
 		break;
 
-	// The arrow and other rotary items in Puzbob are bezier patches, strangely enough.
 	case GE_CMD_BEZIER:
 		{
 			int bz_ucount = data & 0xFF;
@@ -154,9 +163,9 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer, int bufsize) {
 			int sp_utype = (data >> 16) & 0x3;
 			int sp_vtype = (data >> 18) & 0x3;
 			if (data & 0xF00000)
-				snprintf(buffer, bufsize, "DRAW SPLINE: %i x %i, %i x %i (extra %x)", sp_ucount, sp_vcount, sp_utype, sp_vtype, data >> 20);
+				snprintf(buffer, bufsize, "DRAW SPLINE: %i x %i (type %ix%i, extra %x)", sp_ucount, sp_vcount, sp_utype, sp_vtype, data >> 20);
 			else
-				snprintf(buffer, bufsize, "DRAW SPLINE: %i x %i, %i x %i", sp_ucount, sp_vcount, sp_utype, sp_vtype);
+				snprintf(buffer, bufsize, "DRAW SPLINE: %i x %i (type %ix%i)", sp_ucount, sp_vcount, sp_utype, sp_vtype);
 		}
 		break;
 
@@ -289,8 +298,8 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer, int bufsize) {
 		}
 		break;
 
-	case GE_CMD_CLIPENABLE:
-		snprintf(buffer, bufsize, "Clip enable: %i", data);
+	case GE_CMD_DEPTHCLAMPENABLE:
+		snprintf(buffer, bufsize, "Depth clamp enable: %i", data);
 		break;
 
 	case GE_CMD_CULLFACEENABLE:
@@ -421,7 +430,7 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer, int bufsize) {
 	case GE_CMD_LOADCLUT:
 		// This could be used to "dirty" textures with clut.
 		if (data)
-			snprintf(buffer, bufsize, "Clut load: %06x", data);
+			snprintf(buffer, bufsize, "Clut load: %08x, %d bytes, %06x", gstate.getClutAddress(), (data & 0x3F) << 5, data & 0xFFFFC0);
 		else
 			snprintf(buffer, bufsize, "Clut load");
 		break;
@@ -521,7 +530,7 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer, int bufsize) {
 			break;
 		}
 
-	case GE_CMD_TRANSFERSTART:  // Orphis calls this TRXKICK
+	case GE_CMD_TRANSFERSTART:
 		if (data & ~1)
 			snprintf(buffer, bufsize, "Block transfer start: %d (extra %x)", data & 1, data & ~1);
 		else

@@ -2,13 +2,16 @@
 
 #include <string>
 
-#include "thin3d/thin3d.h"
+#include "Common/GPU/thin3d.h"
 
 // Init is done differently on each platform, and done close to the creation, so it's
 // expected to be implemented by subclasses.
 class GraphicsContext {
 public:
 	virtual ~GraphicsContext() {}
+
+	virtual bool InitFromRenderThread(std::string *errorMessage) { return true; }
+	virtual void ShutdownFromRenderThread() {}
 
 	virtual void Shutdown() = 0;
 	virtual void SwapInterval(int interval) = 0;
@@ -25,15 +28,15 @@ public:
 	// Needs casting to the appropriate type, unfortunately. Should find a better solution..
 	virtual void *GetAPIContext() { return nullptr; }
 
-	virtual Draw::DrawContext *CreateThin3DContext() = 0;
-};
+	// Called from the render thread from threaded backends.
+	virtual void ThreadStart() {}
+	virtual bool ThreadFrame() { return true; }
+	virtual void ThreadEnd() {}
+	virtual void StopThread() {}
 
-class DummyGraphicsContext : public GraphicsContext {
-public:
-	void Shutdown() override {}
-	void SwapInterval(int interval) override {}
-	void SwapBuffers() override {}
-	void Resize() override {}
+	// Useful for checks that need to be performed every frame.
+	// Should strive to get rid of these.
+	virtual void Poll() {}
 
-	Draw::DrawContext *CreateThin3DContext() override { return nullptr; }
+	virtual Draw::DrawContext *GetDrawContext() = 0;
 };

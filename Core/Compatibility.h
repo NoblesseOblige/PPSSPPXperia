@@ -18,7 +18,7 @@
 #pragma once
 
 #include <string>
-#include <stdint.h>
+#include <cstdint>
 
 // Compatibility flags are controlled by assets/compat.ini.
 // Alternatively, if PSP/SYSTEM/compat.ini exists, it is merged on top, to enable editing
@@ -48,6 +48,36 @@ struct CompatFlags {
 	bool VertexDepthRounding;
 	bool PixelDepthRounding;
 	bool DepthRangeHack;
+	bool ClearToRAM;
+	bool Force04154000Download;
+	bool DrawSyncEatCycles;
+	bool FakeMipmapChange;
+	bool RequireBufferedRendering;
+	bool RequireBlockTransfer;
+	bool RequireDefaultCPUClock;
+	bool DisableReadbacks;
+	bool DisableAccurateDepth;
+	bool MGS2AcidHack;
+	bool SonicRivalsHack;
+	bool BlockTransferAllowCreateFB;
+	bool IntraVRAMBlockTransferAllowCreateFB;
+	bool YugiohSaveFix;
+	bool ForceUMDDelay;
+	bool ForceMax60FPS;
+	bool JitInvalidationHack;
+	bool HideISOFiles;
+	bool MoreAccurateVMMUL;
+	bool ForceSoftwareRenderer;
+	bool DarkStalkersPresentHack;
+	bool ReportSmallMemstick;
+	bool MemstickFixedFree;
+	bool DateLimited;
+	bool ReinterpretFramebuffers;
+	bool DoublePrecisionSinCos;
+	bool ShaderColorBitmask;
+	bool DisableFirstFrameReadback;
+	bool DisableRangeCulling;
+	bool MpegAvcWarmUp;
 };
 
 class IniFile;
@@ -66,7 +96,7 @@ public:
 private:
 	void Clear();
 	void CheckSettings(IniFile &iniFile, const std::string &gameID);
-	void CheckSetting(IniFile &iniFile, const std::string &gameID, const char *option, bool &flag);
+	void CheckSetting(IniFile &iniFile, const std::string &gameID, const char *option, bool *flag);
 
-	CompatFlags flags_;
+	CompatFlags flags_{};
 };

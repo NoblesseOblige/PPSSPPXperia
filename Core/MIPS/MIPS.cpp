@@ -18,10 +18,12 @@
 #include <cmath>
 #include <limits>
 
-#include "math/math_util.h"
+#include "Common/Math/math_util.h"
 
 #include "Common.h"
-#include "Common/ChunkFile.h"
+#include "Common/Serialize/Serializer.h"
+#include "Common/Serialize/SerializeFuncs.h"
+#include "Core/ConfigValues.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/MIPS/MIPSInt.h"
 #include "Core/MIPS/MIPSTables.h"
@@ -207,9 +209,9 @@ void MIPSState::Init() {
 	// Initialize the VFPU random number generator with .. something?
 	rng.Init(0x1337);
 
-	if (PSP_CoreParameter().cpuCore == CPU_CORE_JIT) {
+	if (PSP_CoreParameter().cpuCore == CPUCore::JIT) {
 		MIPSComp::jit = MIPSComp::CreateNativeJit(this);
-	} else if (PSP_CoreParameter().cpuCore == CPU_CORE_IRJIT) {
+	} else if (PSP_CoreParameter().cpuCore == CPUCore::IR_JIT) {
 		MIPSComp::jit = new MIPSComp::IRJit(this);
 	} else {
 		MIPSComp::jit = nullptr;
@@ -227,7 +229,7 @@ void MIPSState::UpdateCore(CPUCore desired) {
 
 	PSP_CoreParameter().cpuCore = desired;
 	switch (PSP_CoreParameter().cpuCore) {
-	case CPU_CORE_JIT:
+	case CPUCore::JIT:
 		INFO_LOG(CPU, "Switching to JIT");
 		if (MIPSComp::jit) {
 			delete MIPSComp::jit;
@@ -235,7 +237,7 @@ void MIPSState::UpdateCore(CPUCore desired) {
 		MIPSComp::jit = MIPSComp::CreateNativeJit(this);
 		break;
 
-	case CPU_CORE_IRJIT:
+	case CPUCore::IR_JIT:
 		INFO_LOG(CPU, "Switching to IRJIT");
 		if (MIPSComp::jit) {
 			delete MIPSComp::jit;
@@ -243,7 +245,7 @@ void MIPSState::UpdateCore(CPUCore desired) {
 		MIPSComp::jit = new MIPSComp::IRJit(this);
 		break;
 
-	case CPU_CORE_INTERPRETER:
+	case CPUCore::INTERPRETER:
 		INFO_LOG(CPU, "Switching to interpreter");
 		delete MIPSComp::jit;
 		MIPSComp::jit = 0;
@@ -262,37 +264,42 @@ void MIPSState::DoState(PointerWrap &p) {
 	if (MIPSComp::jit)
 		MIPSComp::jit->DoState(p);
 	else
-		MIPSComp::jit->DoDummyState(p);
+		MIPSComp::DoDummyJitState(p);
 
-	p.DoArray(r, sizeof(r) / sizeof(r[0]));
-	p.DoArray(f, sizeof(f) / sizeof(f[0]));
+	DoArray(p, r, sizeof(r) / sizeof(r[0]));
+	DoArray(p, f, sizeof(f) / sizeof(f[0]));
 	if (s <= 2) {
 		float vtemp[128];
-		p.DoArray(vtemp, sizeof(v) / sizeof(v[0]));
+		DoArray(p, vtemp, sizeof(v) / sizeof(v[0]));
 		for (int i = 0; i < 128; i++) {
 			v[voffset[i]] = vtemp[i];
 		}
 	} else {
-		p.DoArray(v, sizeof(v) / sizeof(v[0]));
+		DoArray(p, v, sizeof(v) / sizeof(v[0]));
 	}
-	p.DoArray(vfpuCtrl, sizeof(vfpuCtrl) / sizeof(vfpuCtrl[0]));
-	p.Do(pc);
-	p.Do(nextPC);
-	p.Do(downcount);
+	DoArray(p, vfpuCtrl, sizeof(vfpuCtrl) / sizeof(vfpuCtrl[0]));
+	Do(p, pc);
+	Do(p, nextPC);
+	Do(p, downcount);
 	// Reversed, but we can just leave it that way.
-	p.Do(hi);
-	p.Do(lo);
-	p.Do(fpcond);
+	Do(p, hi);
+	Do(p, lo);
+	Do(p, fpcond);
 	if (s <= 1) {
 		u32 fcr0_unused = 0;
-		p.Do(fcr0_unused);
+		Do(p, fcr0_unused);
 	}
-	p.Do(fcr31);
-	p.Do(rng.m_w);
-	p.Do(rng.m_z);
-	p.Do(inDelaySlot);
-	p.Do(llBit);
-	p.Do(debugCount);
+	Do(p, fcr31);
+	Do(p, rng.m_w);
+	Do(p, rng.m_z);
+	Do(p, inDelaySlot);
+	Do(p, llBit);
+	Do(p, debugCount);
+
+	if (p.mode == p.MODE_READ && MIPSComp::jit) {
+		// Now that we've loaded fcr31, update any jit state associated.
+		MIPSComp::jit->UpdateFCR31();
+	}
 }
 
 void MIPSState::SingleStep() {
@@ -304,12 +311,12 @@ void MIPSState::SingleStep() {
 // returns 1 if reached ticks limit
 int MIPSState::RunLoopUntil(u64 globalTicks) {
 	switch (PSP_CoreParameter().cpuCore) {
-	case CPU_CORE_JIT:
-	case CPU_CORE_IRJIT:
+	case CPUCore::JIT:
+	case CPUCore::IR_JIT:
 		MIPSComp::jit->RunLoopUntil(globalTicks);
 		break;
 
-	case CPU_CORE_INTERPRETER:
+	case CPUCore::INTERPRETER:
 		return MIPSInterpret_RunUntil(globalTicks);
 	}
 	return 1;

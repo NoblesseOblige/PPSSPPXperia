@@ -17,13 +17,16 @@
 
 #pragma once
 
+#include <cstdio>
 #include <cstdarg>
 #include <type_traits>
+
 #include "Common/CommonTypes.h"
 #include "Common/Log.h"
 #include "Core/MIPS/MIPS.h"
 
 class PointerWrap;
+class PSPAction;
 typedef void (* HLEFunc)();
 
 enum {
@@ -92,10 +95,6 @@ struct Syscall
 #define RETURN64(n) {u64 RETURN64_tmp = n; currentMIPS->r[MIPS_REG_V0] = RETURN64_tmp & 0xFFFFFFFF; currentMIPS->r[MIPS_REG_V1] = RETURN64_tmp >> 32;}
 #define RETURNF(fl) currentMIPS->f[0] = fl
 
-#ifndef ARRAY_SIZE
-#define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
-#endif
-
 const char *GetFuncName(const char *module, u32 nib);
 const char *GetFuncName(int module, int func);
 const HLEFunction *GetFunc(const char *module, u32 nib);
@@ -120,6 +119,8 @@ void hleSkipDeadbeef();
 void hleSetSteppingTime(double t);
 // Check if the current syscall context is kernel.
 bool hleIsKernelMode();
+// Enqueue a MIPS function to be called after this HLE call finishes.
+void hleEnqueueCall(u32 func, int argc, const u32 *argv, PSPAction *afterAction = nullptr);
 
 // Delays the result for usec microseconds, allowing other threads to run during this time.
 u32 hleDelayResult(u32 result, const char *reason, int usec);
@@ -148,7 +149,9 @@ void CallSyscall(MIPSOpcode op);
 void WriteFuncStub(u32 stubAddr, u32 symAddr);
 void WriteFuncMissingStub(u32 stubAddr, u32 nid);
 
-const HLEFunction *GetSyscallInfo(MIPSOpcode op);
+void HLEReturnFromMipsCall();
+
+const HLEFunction *GetSyscallFuncPointer(MIPSOpcode op);
 // For jit, takes arg: const HLEFunction *
 void *GetQuickSyscallFunc(MIPSOpcode op);
 

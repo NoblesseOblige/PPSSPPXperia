@@ -15,13 +15,16 @@
 // Official SVN repository and contact information can be found at
 // http://code.google.com/p/dolphin-emu/
 
-#ifndef _DOLPHIN_INTEL_CODEGEN_
-#define _DOLPHIN_INTEL_CODEGEN_
+#pragma once
 
 #include "ppsspp_config.h"
 
-#include "Common.h"
-#include "CodeBlock.h"
+#include <cstddef>
+#include <cstring>
+
+#include "Common/Common.h"
+#include "Common/Log.h"
+#include "Common/CodeBlock.h"
 
 #if PPSSPP_ARCH(64BIT)
 #define PTRBITS 64
@@ -172,7 +175,6 @@ struct OpArg
 	void WriteRex(XEmitter *emit, int opBits, int bits, int customOp = -1) const;
 	void WriteVex(XEmitter* emit, X64Reg regOp1, X64Reg regOp2, int L, int pp, int mmmmm, int W = 0) const;
 	void WriteRest(XEmitter *emit, int extraBytes=0, X64Reg operandReg=INVALID_REG, bool warn_64bit_offset = true) const;
-	void WriteFloatModRM(XEmitter *emit, FloatOp op);
 	void WriteSingleByteOp(XEmitter *emit, u8 op, X64Reg operandReg, int bits);
 	// This one is public - must be written to
 	u64 offset;  // use RIP-relative as much as possible - 64-bit immediates are not available.
@@ -292,7 +294,7 @@ template<> inline u32 PtrOffsetTpl<8>(const void *ptr, const void* base) {
 	if (distance >= 0x80000000LL ||
 	    distance < -0x80000000LL)
 	{
-		_assert_msg_(DYNA_REC, 0, "pointer offset out of range");
+		_assert_msg_(false, "pointer offset out of range");
 		return 0;
 	}
 
@@ -358,13 +360,11 @@ private:
 	void WriteFloatLoadStore(int bits, FloatOp op, FloatOp op_80b, OpArg arg);
 	void WriteNormalOp(XEmitter *emit, int bits, NormalOp op, const OpArg &a1, const OpArg &a2);
 
-	void ABI_CalculateFrameSize(u32 mask, size_t rsp_alignment, size_t needed_frame_size, size_t* shadowp, size_t* subtractionp, size_t* xmm_offsetp);
-
 protected:
 	inline void Write8(u8 value)   {*code++ = value;}
-	inline void Write16(u16 value) {*(u16*)code = (value); code += 2;}
-	inline void Write32(u32 value) {*(u32*)code = (value); code += 4;}
-	inline void Write64(u64 value) {*(u64*)code = (value); code += 8;}
+	inline void Write16(u16 value) {std::memcpy(code, &value, sizeof(u16)); code += 2;}
+	inline void Write32(u32 value) {std::memcpy(code, &value, sizeof(u32)); code += 4;}
+	inline void Write64(u64 value) {std::memcpy(code, &value, sizeof(u64)); code += 8;}
 
 public:
 	XEmitter() { code = nullptr; flags_locked = false; }
@@ -374,7 +374,7 @@ public:
 	void WriteModRM(int mod, int rm, int reg);
 	void WriteSIB(int scale, int index, int base);
 
-	void SetCodePointer(u8 *ptr);
+	void SetCodePointer(u8 *ptr, u8 *writePtr);
 	const u8 *GetCodePointer() const;
 
 	void ReserveCodeSpace(int bytes);
@@ -391,6 +391,7 @@ public:
 	// INC and DEC are slow on Intel Core, but not on AMD. They create a
 	// false flag dependency because they only update a subset of the flags.
 	// XCHG is SLOW and should be avoided.
+	// Actually, REP MOVSB has gotten fast again on recent CPU generations, though it's not all that useful anyway.
 
 	// Debug breakpoint
 	void INT3();
@@ -409,7 +410,6 @@ public:
 	// These two can not be executed in 64-bit mode on early Intel 64-bit CPU:s, only on Core2 and AMD!
 	void LAHF(); // 3 cycle vector path
 	void SAHF(); // direct path fast
-
 
 	// Stack control
 	void PUSH(X64Reg reg);
@@ -756,6 +756,11 @@ public:
 	void PUNPCKLDQ(X64Reg dest, const OpArg &arg);
 	void PUNPCKLQDQ(X64Reg dest, const OpArg &arg);
 
+	void PUNPCKHBW(X64Reg dest, const OpArg &arg);
+	void PUNPCKHWD(X64Reg dest, const OpArg &arg);
+	void PUNPCKHDQ(X64Reg dest, const OpArg &arg);
+	void PUNPCKHQDQ(X64Reg dest, const OpArg &arg);
+
 	void PTEST(X64Reg dest, OpArg arg);
 	void PAND(X64Reg dest, OpArg arg);
 	void PANDN(X64Reg dest, OpArg arg);
@@ -833,6 +838,11 @@ public:
 
 	void PSRAW(X64Reg reg, int shift);
 	void PSRAD(X64Reg reg, int shift);
+
+	void PMULLW(X64Reg dest, const OpArg &arg);
+	void PMULHW(X64Reg dest, const OpArg &arg);
+	void PMULHUW(X64Reg dest, const OpArg &arg);
+	void PMULUDQ(X64Reg dest, const OpArg &arg);
 
 	// SSE4: data type conversions
 	void PMOVSXBW(X64Reg dest, OpArg arg);
@@ -1047,7 +1057,7 @@ public:
 	void ABI_EmitPrologue(int maxCallParams);
 	void ABI_EmitEpilogue(int maxCallParams);
 
-	#ifdef _M_IX86
+	#if PPSSPP_ARCH(X86)
 	inline int ABI_GetNumXMMRegs() { return 8; }
 	#else
 	inline int ABI_GetNumXMMRegs() { return 16; }
@@ -1061,9 +1071,17 @@ public:
 
 class XCodeBlock : public CodeBlock<XEmitter> {
 public:
-	void PoisonMemory() override;
+	void PoisonMemory(int offset) override;
+	bool RipAccessible(const void *ptr) const {
+		// For debugging
+		// return false;
+#if PPSSPP_ARCH(X86)
+		return true;
+#else
+		ptrdiff_t diff = GetCodePtr() - (const uint8_t *)ptr;
+		return diff > -0x7FFFFFE0 && diff < 0x7FFFFFE0;
+#endif
+	}
 };
 
 }  // namespace
-
-#endif

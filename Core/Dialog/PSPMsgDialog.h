@@ -18,6 +18,8 @@
 #pragma once
 
 #include <string>
+
+#include "Common/Swap.h"
 #include "Core/Dialog/PSPDialog.h"
 
 #define SCE_UTILITY_MSGDIALOG_OPTION_ERRORSOUND         0x00000000
@@ -56,7 +58,7 @@ struct pspMessageDialog
 
 class PSPMsgDialog: public PSPDialog {
 public:
-	PSPMsgDialog();
+	PSPMsgDialog(UtilityDialogType type);
 	virtual ~PSPMsgDialog();
 
 	virtual int Init(unsigned int paramAddr);
@@ -72,7 +74,8 @@ protected:
 		return false;
 	}
 
-private :
+private:
+	void FormatErrorCode(uint32_t code);
 	void DisplayMessage(std::string text, bool hasYesNo = false, bool hasOK = false);
 
 	enum Flags
@@ -89,12 +92,15 @@ private :
 		DS_ABORT        = 0x200,
 	};
 
-	u32 flag;
+	u32 flag = 0;
 
 	pspMessageDialog messageDialog;
 	int messageDialogAddr;
 
 	char msgText[512];
 	int yesnoChoice;
+	float scrollPos_ = 0.0f;
+	int framesUpHeld_ = 0;
+	int framesDownHeld_ = 0;
 };
 

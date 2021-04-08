@@ -15,10 +15,20 @@
 // Official SVN repository and contact information can be found at
 // http://code.google.com/p/dolphin-emu/
 
+#include "ppsspp_config.h"
+#if PPSSPP_ARCH(ARM) || PPSSPP_ARCH(ARM64)
+#define REAL_CPUDETECT_AVAIL 1
+#elif PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)
+#define REAL_CPUDETECT_AVAIL 1
+#elif PPSSPP_ARCH(MIPS) || PPSSPP_ARCH(MIPS64)
+#define REAL_CPUDETECT_AVAIL 1
+#endif
 
-#include <memory.h>
-#include "base/logging.h"
-#include "base/basictypes.h"
+#ifndef REAL_CPUDETECT_AVAIL
+#include <cstdint>
+#include <cstring>
+#include <memory>
+
 #include "Common.h"
 #include "CPUDetect.h"
 #include "StringUtils.h"
@@ -48,3 +58,4 @@ std::string CPUInfo::Summarize()
 	sum = StringFromFormat("%s, %i core", cpu_string, num_cores);
 	return sum;
 }
+#endif

@@ -17,9 +17,12 @@
 
 #include <algorithm>
 
-#include "base/timeutil.h"
-#include "base/NativeApp.h"
-#include "input/input_state.h"
+#include "ppsspp_config.h"
+
+#include "Common/System/NativeApp.h"
+#include "Common/System/System.h"
+#include "Common/TimeUtil.h"
+#include "Core/ConfigValues.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
 #include "Core/MIPS/JitCommon/JitBlockCache.h"
 #include "Core/MIPS/MIPSCodeUtils.h"
@@ -31,14 +34,13 @@
 #include "Core/CoreTiming.h"
 #include "Core/HLE/HLE.h"
 
-struct InputState;
 // Temporary hacks around annoying linking errors.  Copied from Headless.
-void NativeUpdate(InputState &input_state) { }
+void NativeUpdate() { }
 void NativeRender(GraphicsContext *graphicsContext) { }
 void NativeResized() { }
 
 void System_SendMessage(const char *command, const char *parameter) {}
-bool System_InputBoxGetWString(const wchar_t *title, const std::wstring &defaultvalue, std::wstring &outvalue) { return false; }
+void System_InputBoxGetString(const std::string &title, const std::string &defaultValue, std::function<void(bool, const std::string &)> cb) { cb(false, ""); }
 void System_AskForPermission(SystemPermission permission) {}
 PermissionStatus System_GetPermissionStatus(SystemPermission permission) { return PERMISSION_STATUS_GRANTED; }
 
@@ -55,7 +57,7 @@ HLEFunction UnitTestFakeSyscalls[] = {
 double ExecCPUTest() {
 	int blockTicks = 1000000;
 	int total = 0;
-	double st = real_time_now();
+	double st = time_now_d();
 	do {
 		for (int j = 0; j < 1000; ++j) {
 			currentMIPS->pc = PSP_GetUserMemoryBase();
@@ -67,8 +69,8 @@ double ExecCPUTest() {
 			++total;
 		}
 	}
-	while (real_time_now() - st < 0.5);
-	double elapsed = real_time_now() - st;
+	while (time_now_d() - st < 0.5);
+	double elapsed = time_now_d() - st;
 
 	return total / elapsed;
 }
@@ -81,7 +83,7 @@ static void SetupJitHarness() {
 	coreState = CORE_POWERUP;
 	currentMIPS = &mipsr4k;
 	Memory::g_MemorySize = Memory::RAM_NORMAL_SIZE;
-	PSP_CoreParameter().cpuCore = CPU_CORE_INTERPRETER;
+	PSP_CoreParameter().cpuCore = CPUCore::INTERPRETER;
 	PSP_CoreParameter().unthrottle = true;
 
 	Memory::Init();
@@ -93,8 +95,8 @@ static void DestroyJitHarness() {
 	// Clear our custom module out to be safe.
 	HLEShutdown();
 	CoreTiming::Shutdown();
-	Memory::Shutdown();
 	mipsr4k.Shutdown();
+	Memory::Shutdown();
 	coreState = CORE_POWERDOWN;
 	currentMIPS = nullptr;
 }
@@ -167,15 +169,15 @@ bool TestJit() {
 	double jit_speed = 0.0, interp_speed = 0.0;
 	if (compileSuccess) {
 		interp_speed = ExecCPUTest();
-		mipsr4k.UpdateCore(CPU_CORE_JIT);
+		mipsr4k.UpdateCore(CPUCore::JIT);
 		jit_speed = ExecCPUTest();
 
 		// Disassemble
 		JitBlockCache *cache = MIPSComp::jit->GetBlockCache();
 		JitBlock *block = cache->GetBlock(0);  // Should only be one block.
-#if defined(ARM)
+#if PPSSPP_ARCH(ARM)
 		std::vector<std::string> lines = DisassembleArm2(block->normalEntry, block->codeSize);
-#elif defined(ARM64)
+#elif PPSSPP_ARCH(ARM64)
 		std::vector<std::string> lines = DisassembleArm64(block->normalEntry, block->codeSize);
 #else
 		std::vector<std::string> lines = DisassembleX86(block->normalEntry, block->codeSize);

@@ -1,16 +1,15 @@
+#include <algorithm>
+#include <tchar.h>
+#include "Common/System/Display.h"
 #include "Windows/GEDebugger/CtrlDisplayListView.h"
 #include "Windows/GEDebugger/GEDebugger.h"
 #include "Windows/InputBox.h"
-#include "Windows/Main.h"
+#include "Windows/main.h"
 #include "Core/Config.h"
 #include "GPU/Debugger/Breakpoints.h"
 #include "GPU/GPUState.h"
 
-#include <algorithm>
-
-static const int numCPUs = 1;
-
-const PTCHAR CtrlDisplayListView::windowClass = _T("CtrlDisplayListView");
+LPCTSTR CtrlDisplayListView::windowClass = _T("CtrlDisplayListView");
 
 const int POPUP_SUBMENU_ID_DISPLAYLISTVIEW = 8;
 extern HMENU g_hPopupMenus;
@@ -43,12 +42,17 @@ CtrlDisplayListView::CtrlDisplayListView(HWND _wnd)
 	SetScrollRange(wnd, SB_VERT, -1,1,TRUE);
 	
 	instructionSize = 4;
-	rowHeight = g_Config.iFontHeight+2;
-	charWidth = g_Config.iFontWidth;
 
-	font = CreateFont(rowHeight-2,charWidth,0,0,FW_DONTCARE,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,
+	// In small window mode, g_dpi_scale may have been adjusted.
+	const float fontScale = 1.0f / g_dpi_scale_real_y;
+	int fontHeight = g_Config.iFontHeight * fontScale;
+	int charWidth = g_Config.iFontWidth * fontScale;
+
+	rowHeight = fontHeight + 2;
+
+	font = CreateFont(fontHeight,charWidth,0,0,FW_DONTCARE,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,
 		L"Lucida Console");
-	boldfont = CreateFont(rowHeight-2,charWidth,0,0,FW_DEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,
+	boldfont = CreateFont(fontHeight,charWidth,0,0,FW_DEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,
 		L"Lucida Console");
 
 	pixelPositions.addressStart = 16;
@@ -58,9 +62,9 @@ CtrlDisplayListView::CtrlDisplayListView(HWND _wnd)
 	validDisplayList = false;
 }
 
-CtrlDisplayListView::~CtrlDisplayListView()
-{
-
+CtrlDisplayListView::~CtrlDisplayListView() {
+	DeleteObject(font);
+	DeleteObject(boldfont);
 }
 
 CtrlDisplayListView *CtrlDisplayListView::getFrom(HWND hwnd)
@@ -184,7 +188,6 @@ void CtrlDisplayListView::onPaint(WPARAM wParam, LPARAM lParam)
 		bool stall = address == list.stall;
 
 		int rowY1 = rowHeight*i;
-		int rowY2 = rowHeight*(i+1);
 
 		// draw background
 		COLORREF backgroundColor = stall ? 0xCCCCFF : 0xFFFFFF;
@@ -266,7 +269,6 @@ void CtrlDisplayListView::toggleBreakpoint()
 
 void CtrlDisplayListView::onMouseDown(WPARAM wParam, LPARAM lParam, int button)
 {
-	int x = LOWORD(lParam);
 	int y = HIWORD(lParam);
 
 	int line = y/rowHeight;
@@ -302,9 +304,8 @@ void CtrlDisplayListView::onMouseUp(WPARAM wParam, LPARAM lParam, int button)
 		switch(TrackPopupMenuEx(GetSubMenu(g_hPopupMenus,POPUP_SUBMENU_ID_DISPLAYLISTVIEW),TPM_RIGHTBUTTON|TPM_RETURNCMD,pt.x,pt.y,wnd,0))
 		{
 		case ID_DISASM_GOTOINMEMORYVIEW:
-			for (int i=0; i<numCPUs; i++)
-				if (memoryWindow[i])
-					memoryWindow[i]->Goto(curAddress);
+			if (memoryWindow)
+				memoryWindow->Goto(curAddress);
 			break;
 		case ID_DISASM_TOGGLEBREAKPOINT:
 			toggleBreakpoint();

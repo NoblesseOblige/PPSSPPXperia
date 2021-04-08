@@ -19,49 +19,36 @@
 
 // Takes ownership of backend.
 RetryingFileLoader::RetryingFileLoader(FileLoader *backend)
-	: filepos_(0), backend_(backend) {
-}
-
-RetryingFileLoader::~RetryingFileLoader() {
-	// Takes ownership.
-	delete backend_;
+	: ProxiedFileLoader(backend) {
 }
 
 bool RetryingFileLoader::Exists() {
-	if (!backend_->Exists()) {
+	if (!ProxiedFileLoader::Exists()) {
 		// Retry once, immediately.
-		return backend_->Exists();
+		return ProxiedFileLoader::Exists();
 	}
 	return true;
 }
 
 bool RetryingFileLoader::ExistsFast() {
-	if (!backend_->ExistsFast()) {
+	if (!ProxiedFileLoader::ExistsFast()) {
 		// Retry once, immediately.
-		return backend_->ExistsFast();
+		return ProxiedFileLoader::ExistsFast();
 	}
 	return true;
 }
 
 bool RetryingFileLoader::IsDirectory() {
 	// Can't tell if it's an error either way.
-	return backend_->IsDirectory();
+	return ProxiedFileLoader::IsDirectory();
 }
 
 s64 RetryingFileLoader::FileSize() {
-	s64 filesize = backend_->FileSize();
+	s64 filesize = ProxiedFileLoader::FileSize();
 	if (filesize == 0) {
-		return backend_->FileSize();
+		return ProxiedFileLoader::FileSize();
 	}
 	return filesize;
-}
-
-std::string RetryingFileLoader::Path() const {
-	return backend_->Path();
-}
-
-void RetryingFileLoader::Seek(s64 absolutePos) {
-	filepos_ = absolutePos;
 }
 
 size_t RetryingFileLoader::ReadAt(s64 absolutePos, size_t bytes, void *data, Flags flags) {
@@ -74,6 +61,5 @@ size_t RetryingFileLoader::ReadAt(s64 absolutePos, size_t bytes, void *data, Fla
 		++retries;
 	}
 
-	filepos_ = absolutePos + readSize;
 	return readSize;
 }

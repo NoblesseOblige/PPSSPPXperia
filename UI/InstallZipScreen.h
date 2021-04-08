@@ -19,15 +19,15 @@
 
 #include <functional>
 
-#include "ui/view.h"
-#include "ui/ui_screen.h"
+#include "Common/UI/View.h"
+#include "Common/UI/UIScreen.h"
 
 #include "UI/MiscScreens.h"
 
 class InstallZipScreen : public UIDialogScreenWithBackground {
 public:
-	InstallZipScreen(std::string zipPath) : installChoice_(0), doneView_(0), zipPath_(zipPath), installStarted_(false), deleteZipFile_(false) {}
-	virtual void update(InputState &input) override;
+	InstallZipScreen(std::string zipPath) : zipPath_(zipPath) {}
+	virtual void update() override;
 	virtual bool key(const KeyInput &key) override;
 
 protected:
@@ -36,12 +36,13 @@ protected:
 private:
 	UI::EventReturn OnInstall(UI::EventParams &params);
 
-	UI::Choice *installChoice_;
-	UI::Choice *backChoice_;
-	UI::ProgressBar *progressBar_;
-	UI::TextView *doneView_;
+	UI::Choice *installChoice_ = nullptr;
+	UI::Choice *backChoice_ = nullptr;
+	UI::ProgressBar *progressBar_ = nullptr;
+	UI::TextView *doneView_ = nullptr;
 	std::string zipPath_;
-	bool installStarted_;
-	bool deleteZipFile_;
+	bool returnToHomebrew_ = true;
+	bool installStarted_ = false;
+	bool deleteZipFile_ = false;
 };
 
